@@ -3,7 +3,6 @@ import io
 import re
 import pathlib
 import subprocess
-import tempfile
 from itertools import combinations
 from math import floor
 from random import randint
@@ -269,17 +268,17 @@ def write_configs(
     main_config_file = subfolder / f"in.{name}"
     data_conf_file = subfolder / f"data.{name}"
     cmap_file = subfolder / f"{name}.cmap" if args.use_cmap else None
-    ashbaugh_hatch_table_file = subfolder / "Ashbaugh-Hatch.table"
+    ah_table_file = subfolder / "Ashbaugh-Hatch.table"
 
-    ashbaugh_hatch_tables = build_ashbaugh_hatch_tables(topo.atom_type_to_index, args)
+    ah_tables = build_ashbaugh_hatch_tables(topo.atom_type_to_index, args)
 
     with main_config_file.open("w") as f:
         write_input_config(
             f,
             topo,
             args,
-            ashbaugh_hatch_tables,
-            ashbaugh_hatch_table_file.name,
+            ah_tables,
+            ah_table_file.name,
             data_conf_file.name,
             output_traj_fname,
             cmap_file.name if cmap_file is not None else None,
@@ -288,8 +287,8 @@ def write_configs(
     with open(data_conf_file, "w") as f:
         write_data_config(f, topo, init_ag, name, args.box_half_width, args.use_cmap)
 
-    with ashbaugh_hatch_table_file.open("w") as f:
-        write_ashbaugh_hatch_tables(f, ashbaugh_hatch_tables)
+    with ah_table_file.open("w") as f:
+        write_ashbaugh_hatch_tables(f, ah_tables)
 
     if cmap_file is None:
         return
