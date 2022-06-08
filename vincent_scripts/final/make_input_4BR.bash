@@ -9,12 +9,12 @@ script=make_input_4BR_$date\.py
 sim=5
 
 for (( c=1; c<=$nruns; c++ ))
-do  
+do
     mkdir $c
     cd $c
 
     num=$(( $RANDOM % $nstructs + 1 ))
-    
+
     echo $num > pdbid
     grep ' CA\| C \| N \| CB \| 2HA' $ENS_DIR/$num.pdb > temp.pdb
     grep ATOM temp.pdb > temp2.pdb

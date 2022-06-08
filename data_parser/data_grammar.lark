@@ -1,0 +1,109 @@
+start: header body
+
+header: counts type_counts box_size
+
+counts: atoms_count bonds_count angles_count dihedrals_count impropers_count
+atoms_count: SIGNED_INT "atoms"
+bonds_count: SIGNED_INT "bonds"
+angles_count: SIGNED_INT "angles"
+dihedrals_count: SIGNED_INT "dihedrals"
+impropers_count: SIGNED_INT "impropers"
+
+type_counts: atom_type_count bond_type_count angle_type_count dih_type_count improper_type_count
+atom_type_count: SIGNED_INT "atom" "types"
+bond_type_count: SIGNED_INT "bond" "types"
+angle_type_count: SIGNED_INT "angle" "types"
+dih_type_count: SIGNED_INT "dihedral" "types"
+improper_type_count: SIGNED_INT "improper" "types"
+
+box_size: x_size y_size z_size
+x_size: SIGNED_FLOAT SIGNED_FLOAT "xlo" "xhi"
+y_size: SIGNED_FLOAT SIGNED_FLOAT "ylo" "yhi"
+z_size: SIGNED_FLOAT SIGNED_FLOAT "zlo" "zhi"
+
+body: list_or_coeffs+
+
+list_or_coeffs: masses_list
+    | pair_coeffs
+    | atoms_list
+    | bond_coeffs bonds_list
+    | angle_coeffs angles_list
+    | dihedral_coeffs dihedrals_list
+    | improper_coeffs impropers_list
+
+
+?index: SIGNED_INT
+?atom_index: SIGNED_INT
+?resid: SIGNED_INT
+?type: SIGNED_INT
+?charge: SIGNED_INT | SIGNED_FLOAT
+
+masses_list: "Masses" masses_row*
+masses_row: type SIGNED_FLOAT
+
+// masses_list: _inter_coeffs{"Masses"}
+
+// _inter_coeffs{coeffs_name}: coeffs_name coeffs_row*
+// coeffs_row: type (SIGNED_INT | SIGNED_FLOAT)+
+
+// _inters_list{inters_name, n_atoms}: inters_name inter_row{n_atoms}*
+// inter_row{n_atoms}: index type atom_index ~ n_atoms
+
+// pair_coeffs: _inter_coeffs{PAIR_COEFFS_STR}
+// PAIR_COEFFS_STR: "Pair" "Coeffs"
+
+pair_coeffs: "Pair" "Coeffs" pair_coeffs_row*
+pair_coeffs_row: index (SIGNED_INT | SIGNED_FLOAT) ~ 4
+
+// atoms_list: _inter_coeffs{"Atoms"}
+
+atoms_list: "Atoms" atoms_list_row*
+atoms_list_row: atom_index resid type charge position
+position: (SIGNED_INT | SIGNED_FLOAT)~3
+
+// bond_coeffs: _inter_coeffs{"Bond Coeffs"}
+// bonds_list: _inters_list{"Bonds"}
+
+// angle_coeffs: _inter_coeffs{"Angle Coeffs"}
+// angles_list: _inters_list{"Angles"}
+
+// dihedral_coeffs: _inter_coeffs{"Dihedral Coeffs"}
+// dihedrals_list: _inters_list{"Dihedrals"}
+
+// improper_coeffs: _inter_coeffs{"Improper Coeffs"}
+// impropers_list: _inters_list{"Impropers"}
+
+bond_coeffs: "Bond" "Coeffs" bond_coeffs_row*
+bond_coeffs_row: type (SIGNED_INT | SIGNED_FLOAT) ~ 2
+
+bonds_list: "Bonds" bonds_list_row*
+bonds_list_row: index type atom_index~2
+
+angle_coeffs: "Angle" "Coeffs" angle_coeffs_row*
+angle_coeffs_row: type (SIGNED_INT | SIGNED_FLOAT) ~ 4
+
+angles_list: "Angles" angles_list_row*
+angles_list_row: index type atom_index~3
+
+dihedral_coeffs: "Dihedral" "Coeffs" dihedral_coeffs_row*
+dihedral_coeffs_row: type (SIGNED_INT | SIGNED_FLOAT) ~ 4
+
+dihedrals_list: "Dihedrals" dihedrals_list_row*
+dihedrals_list_row: index type atom_index ~ 4
+
+improper_coeffs: "Improper" "Coeffs" improper_coeffs_row*
+improper_coeffs_row: type (SIGNED_INT | SIGNED_FLOAT) ~ 2
+
+impropers_list: "Impropers" impropers_list_row*
+impropers_list_row: index type atom_index ~ 4
+
+// COMMENT: /#[^\n]*/
+// COMMENT: "#" /[^\n]/*
+
+%import common.WS
+%import common.SIGNED_INT
+%import common.SIGNED_FLOAT
+%import common.SH_COMMENT -> COMMENT
+
+%ignore COMMENT
+%ignore WS
