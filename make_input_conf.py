@@ -10,14 +10,20 @@ from random import randint
 import numpy as np
 import MDAnalysis as mda
 from MDAnalysis.lib.util import convert_aa_code
-from MDAnalysis.analysis.dihedrals import Ramachandran
-from scipy import ndimage, stats
+# from MDAnalysis.analysis.dihedrals import Ramachandran
+from scipy import ndimage, stats, constants
+import mdtraj as mdt
+from scipy.stats import gaussian_kde
+from KDEpy import FFTKDE
+
 
 
 # from astropy.convolution import convolve
 # from astropy.convolution.kernels import Gaussian2DKernel
 
-from make_data_conf import write_data_config, BaseDataBuilder, CharmmDataBuilder
+from write_data_config import write_data_config
+from base_data_builder import BaseDataBuilder
+from charmm_data_builder import CharmmDataBuilder
 
 # TODO: move the data dict either to a diffent file or to a json file
 
@@ -383,25 +389,68 @@ def build_ashbaugh_hatch_tables(atom_type_to_index, args: argparse.Namespace):
     return tables
 
 
-def build_cmaps(u_ens_traj, crossterm_type_to_index, args: argparse.Namespace):
-    RT = 1.98720425864083e-3 * args.temp
+def build_cmaps(
+    ens_traj, ref_traj, data_builder: BaseDataBuilder, args: argparse.Namespace
+):
+
+    def check_inds(topo, phi_inds, psi_inds):
+        resnames = [res.name for res in topo.residues][1:-1]
+
+        for resname, phi_ind, psi_ind in zip(
+            resnames, phi_inds[:-1], psi_inds[1:], strict=True
+        ):
+            assert all(phi_ind[1:] == psi_ind[:-1])
+
+            atom1 = topo.atom(phi_ind[2])
+            atom2 = topo.atom(psi_ind[1])
+
+            assert atom1 == atom2
+            assert atom1.name == "CA"
+
+            assert atom1.residue.name == atom2.residue.name == resname
+
+    def build_phipsi(traj):
+        phi_inds, phi = mdt.compute_phi(traj)
+        psi_inds, psi = mdt.compute_psi(traj)
+
+        check_inds(traj.topology, phi_inds, psi_inds)
+
+        phi = np.concatenate([np.zeros([phi.shape[0], 1]), phi], axis=1)
+        psi = np.concatenate([psi, np.zeros([psi.shape[0], 1])], axis=1)
+        phipsi = np.stack([phi, psi], axis=-1).transpose([1, 0, 2])
+
+        return phipsi
+
+
+    R = constants.R / (constants.calorie * 1e3)
+    # RT = 1.98720425864083e-3 * args.temp
     # the last element of bins is just 180,
     # it's only needed for np.histogram2d to work correctly
     bins = np.linspace(-180, 180, args.cmap_points + 1)
 
-    # TODO: is it phi-psi? it should be...
-    target_rama = np.loadtxt(args.target_dist)
+    # target_rama = np.loadtxt(args.target_dist)
 
-    r = Ramachandran(u_ens_traj).run()
-
-    # r.results.angles is (n_frames, n_residues - 2, 2)
-    angles = np.transpose(r.results.angles, [1, 2, 0])
-    # after this it's (n_residues - 2, 2, n_frames)
+    ens_phipsi = build_phipsi(ens_traj)
+    ref_phipsi = build_phipsi(ref_traj)
 
     cmaps_dict = {}
 
-    # TODO: instead of using histogram2d and smoothing with a gaussian filter
-    # let's experiment with KDE
+    crossterm_ind_to_resids = (
+        (data_builder.crossterm_type_to_index[key], resids)
+        for key, resids in data_builder.crossterm_type_to_resids.items()
+    )
+    crossterm_ind_to_resids = sorted(crossterm_ind_to_resids, key=lambda x: x[0])
+
+    for ind, resids in crossterm_ind_to_resids:
+        sel_ens_phipsi = ens_phipsi[resids].reshape(-1, 2)
+        sel_ref_phipsi = ref_phipsi[resids].reshape(-1, 2)
+
+        scipy_kde = gaussian_kde(restype_angles.T, bw_method="silverman")
+        fft_kde = FFTKDE(bw=scipy_kde.silverman_factor())
+        fft_kde.fit(restype_angles)
+        pdf = fft_kde.evaluate(grid).reshape(200, 200)
+
+        pass
 
     for res, phi_psi_ens in zip(u_ens_traj.residues[1:-1], angles):
         # kde = stats.gaussian_kde(phi_psi_ens)
@@ -419,7 +468,7 @@ def build_cmaps(u_ens_traj, crossterm_type_to_index, args: argparse.Namespace):
         #     boundary="wrap",
         # )
 
-        cmap = -RT * np.log(ens_rama / target_rama)
+        cmap = -R * args.temp * np.log(ens_rama / target_rama)
         index = crossterm_type_to_index[res.resid]
         cmaps_dict[res] = (index, cmap)
 
@@ -558,12 +607,10 @@ def main():
 
     u_ref = mda.Universe("ch2lmp_test/step1_pdbreader.pdb")
     data_builder = CharmmDataBuilder(
-        pathlib.Path("data_parser/data_grammar.lark"),
-        pathlib.Path("ch2lmp_test/step1_pdbreader.data"),
-        u_ref.atoms,
+        pathlib.Path("ch2lmp_test/step1_pdbreader.data"), u_ref.atoms
     )
 
-    subfolder.mkdir(exist_ok=True)
+    # subfolder.mkdir(exist_ok=True)
 
     for init_conf in args.init_confs:
         cleaned_pdb = io.StringIO()
@@ -577,21 +624,36 @@ def main():
         # select the atoms used in the simulation
         init_ag = data_builder.filter_cg_atoms(u_init.atoms)
 
-        subfolder = args.output_dir / init_conf.stem
+        conf_subdir = args.output_dir / init_conf.stem
         # TODO: maybe this is not necessary...
-        subfolder.mkdir(exist_ok=True)
+        conf_subdir.mkdir(exist_ok=True)
+
+        ref_subdir = conf_subdir / "ref"
 
         if args.use_cmap:
-            subfolder = subfolder / "cmap"
-            u_ens_traj = mda.Universe(cg_pdb, args.ens_traj)
-        else:
-            subfolder = subfolder / "ref"
-            u_ens_traj = None
+            ref_traj_file = ref_subdir / "traj.xtc"
+            assert ref_traj_file.exists()
 
-        subfolder.mkdir(exist_ok=True)
+            ref_traj = mdt.load(ref_traj_file, top=...)
+
+            cmap_subdir = conf_subdir / "cmap"
+            cmap_subdir.mkdir(exist_ok=True)
+
+            ens_traj = mdt.load(args.ens_traj, top=...)
+
+            # subfolder = subfolder / "cmap"
+            # subfolder.mkdir(exist_ok=True)
+            # u_ens_traj = mda.Universe(cg_pdb, args.ens_traj)
+        else:
+            # subfolder = subfolder / "ref"
+            ref_subdir.mkdir(exist_ok=True)
+            # u_ens_traj = None
+            ref_traj = None
+
+        # subfolder.mkdir(exist_ok=True)
 
         init_ag.write(subfolder / (init_conf.stem + "_clean.pdb"))
-        write_configs(subfolder, init_ag, data_builder, args, u_ens_traj)
+        write_configs(subfolder, init_ag, data_builder, args, ens_traj)
 
         if args.dry_run:
             print("ok")

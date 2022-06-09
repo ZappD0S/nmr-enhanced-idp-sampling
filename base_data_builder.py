@@ -47,6 +47,11 @@ class BaseDataBuilder(ABC):
     def n_dihedral_types(self):
         pass
 
+    @property
+    @abstractmethod
+    def crossterm_type_to_resids(self):
+        pass
+
     @abstractmethod
     def build_atom_type_masses(self):
         pass
