@@ -3,7 +3,8 @@
 
 n_runs=11
 
-find ensemble/ -regextype posix-extended -regex "^.*/[0-9]+\.pdb$" \
+# find ensemble/ -regextype posix-extended -regex "^.*/[0-9]+\.pdb$" \
+find ensemble/ -regextype posix-extended -regex "^.*/[0-9]+a_132\.pdb$" \
     | shuf -n $n_runs \
     | xargs -t python make_input_conf.py  \
         --output-dir runs/ \

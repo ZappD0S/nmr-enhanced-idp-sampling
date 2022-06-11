@@ -3,15 +3,13 @@ import io
 import re
 import pathlib
 import subprocess
-from itertools import combinations
 from math import floor
 from random import randint
 import tempfile
 
 import numpy as np
 import MDAnalysis as mda
-from MDAnalysis.lib.util import convert_aa_code
-from scipy import ndimage, stats, constants
+from scipy import constants
 import mdtraj as mdt
 from scipy.stats import gaussian_kde
 from KDEpy import FFTKDE
@@ -20,8 +18,6 @@ from KDEpy import FFTKDE
 from write_data_config import write_data_config
 from base_data_builder import BaseDataBuilder
 from charmm_data_builder import CharmmDataBuilder
-
-# TODO: move the data dict either to a diffent file or to a json file
 
 
 def write_cmap_tables(stream: io.TextIOBase, cmaps_dict, angles):
@@ -60,11 +56,12 @@ def write_input_config(
         f"bond_style harmonic\n"
         f"angle_style charmm\n"
         f"dihedral_style charmm\n"
+        f"improper_style harmonic\n"
         f"special_bonds charmm\n"
         f"\n"
-        # TODO: nm/cut/coul/long
-        f"pair_style lj/charmm/coul/long 8.0 10.0\n"
-        f"pair_modify mix arithmetic\n"
+        f"pair_style nm/cut/coul/long 12.0 15.0\n"
+        # f"pair_style lj/charmm/coul/long 8.0 10.0\n"
+        # f"pair_modify mix arithmetic\n"
         # f"suffix off\n"
         f"kspace_style pppm 1e-4\n"
         # f"suffix on\n"
@@ -129,9 +126,11 @@ def write_configs(
     name = "CG"
     output_traj_fname = "traj.xtc"
 
+    use_cmap = ens_ref_traj is not None
+
     main_config_file = subfolder / f"in.{name}"
     data_conf_file = subfolder / f"data.{name}"
-    cmap_file = subfolder / f"{name}.cmap" if args.use_cmap else None
+    cmap_file = subfolder / f"{name}.cmap" if use_cmap else None
 
     with main_config_file.open("w") as f:
         write_input_config(
@@ -139,13 +138,11 @@ def write_configs(
             args,
             data_conf_file.name,
             output_traj_fname,
-            cmap_file.name if cmap_file is not None else None,
+            cmap_file.name if use_cmap else None,
         )
 
     with open(data_conf_file, "w") as f:
-        write_data_config(
-            f, data_builder, init_ag, name, args.box_half_width, args.use_cmap
-        )
+        write_data_config(f, data_builder, init_ag, name, args.box_half_width, use_cmap)
 
     if cmap_file is None:
         return
@@ -188,16 +185,14 @@ def build_cmaps(ens_ref_traj, data_builder: BaseDataBuilder, args: argparse.Name
 
         check_inds(traj.topology, phi_inds, psi_inds)
 
-        phi = np.concatenate([np.zeros([phi.shape[0], 1]), phi], axis=1)
-        psi = np.concatenate([psi, np.zeros([psi.shape[0], 1])], axis=1)
+        zero_pad = np.zeros([phi.shape[0], 1])
+        phi = np.concatenate([zero_pad, phi], axis=1)
+        psi = np.concatenate([psi, zero_pad], axis=1)
         phipsi = np.stack([phi, psi], axis=-1).transpose([1, 0, 2])
 
         return phipsi
 
     R = constants.R / (constants.calorie * 1e3)
-    # the last element of bins is just 180,
-    # it's only needed for np.histogram2d to work correctly
-    # bins = np.linspace(-180, 180, args.cmap_points + 1)
 
     ens_traj, ref_traj = ens_ref_traj
 
@@ -274,14 +269,16 @@ def clean_pdb(input: io.TextIOBase, output: io.TextIOBase):
 def build_parser():
     parser = argparse.ArgumentParser(description="What the program does")
 
-    parser.add_argument("--topo-pdb", type=str)
+    parser.add_argument("--topo-pdb", type=str, required=True)
+    parser.add_argument("--ref-data", type=pathlib.Path, required=True)
 
     cmap_group = parser.add_argument_group("CMAP")
-    cmap_group.add_argument("--use-cmap", action="store_true")
-    cmap_group.add_argument("--target-dist", type=argparse.FileType("r"))
+    # cmap_group.add_argument("--use-cmap", action="store_true")
+    # cmap_group.add_argument("--target-dist", type=argparse.FileType("r"))
     cmap_group.add_argument(
         "--ens-traj",
         type=str,
+        required=True,
         help="""this is not an actual trajectory.
         It's just the ASTEROIDS ensemble conformations put together in an XTC file""",
     )
@@ -297,17 +294,17 @@ def build_parser():
         "--n-tasks", nargs="?", type=int, default=6, help="number of parallel tasks"
     )
 
-    ah_group = parser.add_argument_group("Ashbaugh-Hatch")
-    ah_group.add_argument("--ah-min-dist", nargs="?", type=float, default=0.5)
-    ah_group.add_argument("--ah-cutoff", nargs="?", type=float, default=30.0)
-    ah_group.add_argument(
-        "--epsilon",
-        nargs="?",
-        type=float,
-        default=0.2,
-        help="energy scale of non-bonded interactions, in Kcal/mol.",
-    )
-    ah_group.add_argument("--ah-points", nargs="?", type=int, default=7501)
+    # ah_group = parser.add_argument_group("Ashbaugh-Hatch")
+    # ah_group.add_argument("--ah-min-dist", nargs="?", type=float, default=0.5)
+    # ah_group.add_argument("--ah-cutoff", nargs="?", type=float, default=30.0)
+    # ah_group.add_argument(
+    #     "--epsilon",
+    #     nargs="?",
+    #     type=float,
+    #     default=0.2,
+    #     help="energy scale of non-bonded interactions, in Kcal/mol.",
+    # )
+    # ah_group.add_argument("--ah-points", nargs="?", type=int, default=7501)
 
     phys_params_group = parser.add_argument_group("Physical parameters")
     phys_params_group.add_argument(
@@ -316,18 +313,18 @@ def build_parser():
     phys_params_group.add_argument(
         "-conc", "--concentration", nargs="?", type=float, default=0.15
     )
-    phys_params_group.add_argument("--CO-charges", nargs="?", type=float, default=30.0)
+    # phys_params_group.add_argument("--CO-charges", nargs="?", type=float, default=30.0)
     phys_params_group.add_argument("--dielectric", nargs="?", type=float, default=78.5)
     phys_params_group.add_argument("-T", "--temp", nargs="?", type=float, default=300.0)
-    phys_params_group.add_argument("--scaling", nargs="?", type=float, default=0.66)
+    # phys_params_group.add_argument("--scaling", nargs="?", type=float, default=0.66)
 
     sim_params_group = parser.add_argument_group("Simulation parameters")
     sim_params_group.add_argument("--dry-run", action="store_true")
     sim_params_group.add_argument(
-        "--sim-time", nargs="?", type=float, default=500.0, help="in nanoseconds"
+        "--sim-time", nargs="?", type=float, default=300.0, help="in nanoseconds"
     )
     sim_params_group.add_argument(
-        "-ts", "--time-step", nargs="?", type=float, default=4.0, help="in femtoseconds"
+        "-ts", "--time-step", nargs="?", type=float, default=2.0, help="in femtoseconds"
     )
     sim_params_group.add_argument(
         "--box-half-width",
@@ -361,26 +358,21 @@ def main():
     parser = build_parser()
     args = parser.parse_args()
 
-    if args.use_cmap and not (args.target_dist and args.ens_traj):
-        parser.error("TODO")
-
     args.output_dir.mkdir(exist_ok=True)
-    # topo_json_file = args.output_dir / "topo.json"
-    cg_pdb = args.output_dir / "cg.pdb"
 
-    # TODO: this two files need to be passed as input
-    u_ref = mda.Universe("ch2lmp_test/step1_pdbreader.pdb")
-    data_builder = CharmmDataBuilder(
-        pathlib.Path("ch2lmp_test/step1_pdbreader.data"), u_ref.atoms
-    )
+    u_ref = mda.Universe(args.topo_pdb)
 
-    # subfolder.mkdir(exist_ok=True)
+    data_builder = CharmmDataBuilder(pathlib.Path(args.ref_data), u_ref.atoms)
+
+    cg_atoms = data_builder.filter_cg_atoms(u_ref.atoms)
+    cg_atoms.write(args.output_dir / "cg.pdb")
 
     init_ag_map = {}
 
     for init_conform in args.init_confs:
-        with init_conform.open() as raw_pdb, tempfile.TemporaryFile() as cleaned_pdb:
+        with init_conform.open() as raw_pdb, tempfile.TemporaryFile("w+") as cleaned_pdb:
             clean_pdb(raw_pdb, cleaned_pdb)
+            cleaned_pdb.seek(0)
             u_init = mda.Universe(cleaned_pdb, format="PDB")
 
         init_ag = data_builder.filter_cg_atoms(u_init.atoms)
@@ -397,9 +389,7 @@ def main():
         ref_subdir = conform_subdir / "ref"
         ref_subdir.mkdir(exist_ok=True)
 
-        write_configs(
-            ref_subdir, init_ag, data_builder, args, None
-        )  #  (ens_traj, ref_traj))
+        write_configs(ref_subdir, init_ag, data_builder, args, None)
         run_sim(ref_subdir, args)
 
         ref_trajs_map[init_conform_name] = ref_subdir / "traj.xtc"

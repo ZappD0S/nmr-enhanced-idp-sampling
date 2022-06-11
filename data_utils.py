@@ -175,7 +175,8 @@ def build_cmap_atoms(dihedrals):
             not_matched.append(dihedral1)
 
     not_matched.extend(left_dihedrals)
-    # print(len(not_matched))
-    assert len(not_matched) == 2
+    # print([[atom.name for atom in dih] for dih in not_matched])
+    # print(len(atoms_list))
+    # assert len(not_matched) == 2
 
     return atoms_list

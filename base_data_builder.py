@@ -24,6 +24,11 @@ class BaseDataBuilder(ABC):
 
     @property
     @abstractmethod
+    def n_impropers(self):
+        pass
+
+    @property
+    @abstractmethod
     def n_crossterms(self):
         pass
 
@@ -49,6 +54,11 @@ class BaseDataBuilder(ABC):
 
     @property
     @abstractmethod
+    def n_improper_types(self):
+        pass
+
+    @property
+    @abstractmethod
     def crossterm_type_to_resids(self):
         pass
 
@@ -65,6 +75,10 @@ class BaseDataBuilder(ABC):
         pass
 
     @abstractmethod
+    def build_mixed_pair_coeffs(self):
+        pass
+
+    @abstractmethod
     def build_bond_coeffs(self):
         pass
 
@@ -77,15 +91,23 @@ class BaseDataBuilder(ABC):
         pass
 
     @abstractmethod
-    def build_angles_list(self):
-        pass
-
-    @abstractmethod
     def build_dihedral_coeffs(self):
         pass
 
     @abstractmethod
+    def build_improper_coeffs(self):
+        pass
+
+    @abstractmethod
+    def build_angles_list(self):
+        pass
+
+    @abstractmethod
     def build_dihedrals_list(self):
+        pass
+
+    @abstractmethod
+    def build_impropers_list(self):
         pass
 
     @abstractmethod
