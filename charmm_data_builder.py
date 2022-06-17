@@ -1,5 +1,7 @@
 from itertools import pairwise
 from math import sqrt
+
+import numpy as np
 from data_utils import (
     filter_atoms,
     get_atom_id,
@@ -20,6 +22,10 @@ from itertools import combinations, combinations_with_replacement
 
 
 class CharmmDataBuilder(BaseDataBuilder):
+    @property
+    def cg_atom_ids(self):
+        return self._cg_atom_ids
+
     @property
     def n_atoms(self):
         return len(self._atom_to_type)
@@ -42,7 +48,7 @@ class CharmmDataBuilder(BaseDataBuilder):
 
     @property
     def n_crossterms(self):
-        raise NotImplementedError
+        return len(self._crossterm_to_type)
 
     @property
     def n_atom_types(self):
@@ -65,8 +71,11 @@ class CharmmDataBuilder(BaseDataBuilder):
         return len(self._imp_coeffs)
 
     @property
-    def crossterm_type_to_resids(self):
-        return self._crossterm_type_to_resids
+    def crossterm_ind_to_resids(self):
+        for key, resids in self._crossterm_type_to_resids.items():
+            ind = self._crossterm_type_to_ind[key]
+
+            yield ind, resids
 
     def __init__(self, chm2lmp_data: Path, all_ag: mda.AtomGroup) -> None:
         super().__init__()
@@ -75,6 +84,14 @@ class CharmmDataBuilder(BaseDataBuilder):
         parser = Lark.open("data_parser/data_grammar.lark", parser="lalr")
         self._all_ag = all_ag
         self._cg_ag = self._build_cg_ag(all_ag)
+
+        cg_mask = self._build_cg_mask(all_ag)
+        all_atom_ids = [get_atom_id(atom) for atom in all_ag]
+        self._cg_atom_ids = [
+            atom_id for atom_id, is_cg in zip(all_atom_ids, cg_mask) if is_cg
+        ]
+
+        assert all(atom.ix == i for i, atom in enumerate(self._all_ag))
 
         self._all_ind_to_atom = {atom.ix: get_atom_id(atom) for atom in self._all_ag}
         self._cg_atom_to_ind = {
@@ -116,9 +133,6 @@ class CharmmDataBuilder(BaseDataBuilder):
         self._imp_coeffs, self._imp_list = self._coeffs_inters_lists(
             imp_coeffs_tree, imps_tree
         )
-        # print(imp_coeffs)
-        # print(len(imp_list))
-        # assert len(imp_coeffs) == 0 and len(imp_list) == 0
 
         (
             self._crossterm_to_type,
@@ -130,12 +144,19 @@ class CharmmDataBuilder(BaseDataBuilder):
         cg_atoms = []
 
         for atom in all_ag:
-            if atom.name in {"CA", "CB", "C", "N", "O"} or (
-                atom.resname == "GLY" and atom.name == "2HA"
-            ):
+            if atom.name in {"CA", "CB", "C", "N", "O"}:
                 cg_atoms.append(atom)
 
         return mda.AtomGroup(cg_atoms)
+
+    def _build_cg_mask(self, all_ag):
+        mask = []
+
+        for atom in all_ag:
+            is_cg = atom.name in {"CA", "CB", "C", "N", "O"}
+            mask.append(is_cg)
+
+        return np.array(mask, dtype=bool)
 
     def _build_coeffs_dict(self, coeffs_tree):
         coeffs_dict = {}
@@ -228,7 +249,7 @@ class CharmmDataBuilder(BaseDataBuilder):
             _, atom_name_i, _ = key_i
             _, atom_name_j, _ = key_j
 
-            if atom_name_i in {"CB", "2HA"} and atom_name_j in {"CB", "2HA"}:
+            if atom_name_i == "CB" and atom_name_j == "CB":
                 # sidechain-sidechain interaction
                 sigma_i /= 2 / sqrt(3)
                 sigma_j /= 2 / sqrt(3)
@@ -236,16 +257,20 @@ class CharmmDataBuilder(BaseDataBuilder):
                 sigma_ij = (sigma_i * sigma_j) ** 0.5
                 nm_exps = (8, 6)
             else:
-                if atom_name_i in {"CB", "2HA"}:
+                if atom_name_i == "CB":
                     sigma_i /= 2 ** (1 / 6)
 
-                if atom_name_j in {"CB", "2HA"}:
+                if atom_name_j == "CB":
                     sigma_j /= 2 ** (1 / 6)
 
                 sigma_ij = 0.5 * (sigma_i + sigma_j)
                 nm_exps = (12, 6)
 
-            mixed_pair_coeffs.append(pair_inds + ("mie/cut", eps_ij, sigma_ij) + nm_exps)
+            mixed_pair_coeffs.append(
+                tuple(ind + 1 for ind in pair_inds)
+                + ("mie/cut", eps_ij, sigma_ij)
+                + nm_exps
+            )
 
         return mixed_pair_coeffs
 
@@ -288,8 +313,9 @@ class CharmmDataBuilder(BaseDataBuilder):
             if is_term:
                 n_terms += 1
             # this is just to have a separate entry for proline's backbone nitrogen
-            is_npro = atom.type == "N" and atom.resname == "PRO"
-            key = (pair_coeffs, atom.name, is_term, is_npro)
+            is_n_pro = atom.name == "N" and atom.resname == "PRO"
+            is_ca_gly = atom.name == "CA" and atom.resname == "GLY"
+            key = (pair_coeffs, atom.name, is_term, is_n_pro, is_ca_gly)
 
             atom_type_to_ids.setdefault(key, []).append(get_atom_id(atom))
             atom_type_to_resnames.setdefault(key, set()).add(atom.resname)
@@ -300,7 +326,7 @@ class CharmmDataBuilder(BaseDataBuilder):
         atom_type_to_coeffs = {}
 
         for key, resnames in atom_type_to_resnames.items():
-            pair_coeffs, atom_name, is_term, _ = key
+            pair_coeffs, atom_name, is_term, _, _ = key
             new_key = (tuple(sorted(resnames)), atom_name, is_term)
             assert new_key not in atom_type_to_coeffs
             atom_type_to_coeffs[new_key] = pair_coeffs
@@ -309,7 +335,7 @@ class CharmmDataBuilder(BaseDataBuilder):
             atom_type_to_ids[new_key] = atom_type_to_ids.pop(key)
 
         for atom in other_atoms:
-            assert atom.name == "CB" or (atom.resname == "GLY" and atom.name == "2HA")
+            assert atom.name == "CB"
 
             key = ((atom.resname,), atom.name, False)
             atom_type_to_ids.setdefault(key, []).append(get_atom_id(atom))
@@ -329,7 +355,7 @@ class CharmmDataBuilder(BaseDataBuilder):
             for atom_id in atom_ids
         }
         atom_type_to_index = {
-            atom_type: i + 1 for i, atom_type in enumerate(atom_type_to_coeffs)
+            atom_type: i for i, atom_type in enumerate(atom_type_to_coeffs)
         }
 
         return atom_to_type, atom_type_to_index, atom_type_to_coeffs
@@ -349,14 +375,16 @@ class CharmmDataBuilder(BaseDataBuilder):
                     mass = amd["N"]
                 case _, "N", is_term:
                     mass = amd["N"] + (3 * amd["H"] if is_term else amd["H"])
+                case ["GLY"], "CA", False:
+                    mass = amd["C"] + 2 * amd["H"]
                 case _, "CA", False:
                     mass = amd["C"] + amd["H"]
-                case [resname], "CB" | "2HA", False:
+                case [resname], "CB", False:
                     mass = rmd[convert_aa_code(resname)]
                 case _:
                     raise Exception
 
-            atom_type_masses.append((index, mass))
+            atom_type_masses.append((index + 1, mass))
 
         return atom_type_masses
 
@@ -388,7 +416,7 @@ class CharmmDataBuilder(BaseDataBuilder):
                     charge = 0
                 case (_, "CA", False):
                     charge = 0
-                case ([resname], "CB" | "2HA", False):
+                case ([resname], "CB", False):
                     charge = charges_dict[convert_aa_code(resname)]
                 case _:
                     raise Exception
@@ -400,7 +428,7 @@ class CharmmDataBuilder(BaseDataBuilder):
                 (
                     index,
                     atom.resid,
-                    type_index,
+                    type_index + 1,
                     charge,
                     *atom.position.tolist(),
                     0,
@@ -424,7 +452,7 @@ class CharmmDataBuilder(BaseDataBuilder):
         return self._imp_coeffs
 
     def build_angles_list(self):
-        # remove last two columns and use style harmonic
+        # TODO: remove last two columns and use style harmonic
         return self._angles_list
 
     def build_dihedral_coeffs(self):
@@ -447,7 +475,6 @@ class CharmmDataBuilder(BaseDataBuilder):
         for row in self._dih_list:
             _, _, *dih_inds = row
             assert len(dih_inds) == 4
-            # BUG: dih_inds start from one!
             dih_atoms = self._cg_ag[[ind - 1 for ind in dih_inds]]
             dihedrals.append(dih_atoms)
 
@@ -470,7 +497,7 @@ class CharmmDataBuilder(BaseDataBuilder):
             crossterm_to_type[crossterm_atom_ids] = key
 
             if key not in crossterm_type_to_ind:
-                crossterm_type_to_ind[key] = len(crossterm_type_to_ind) + 1
+                crossterm_type_to_ind[key] = len(crossterm_type_to_ind)
 
             crossterm_type_to_resids.setdefault(key, []).append(
                 crossterm_atoms[1].resid
@@ -486,6 +513,6 @@ class CharmmDataBuilder(BaseDataBuilder):
 
             atom_inds = [self._cg_atom_to_ind[atom_id] + 1 for atom_id in crossterm_ids]
 
-            cmap_crossterms_list.append((i + 1, crossterm_type_ind, *atom_inds))
+            cmap_crossterms_list.append((i + 1, crossterm_type_ind + 1, *atom_inds))
 
         return cmap_crossterms_list

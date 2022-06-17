@@ -4,6 +4,11 @@ from abc import ABC, abstractmethod
 class BaseDataBuilder(ABC):
     @property
     @abstractmethod
+    def cg_atom_ids(self):
+        pass
+
+    @property
+    @abstractmethod
     def n_atoms(self):
         pass
 
@@ -59,7 +64,7 @@ class BaseDataBuilder(ABC):
 
     @property
     @abstractmethod
-    def crossterm_type_to_resids(self):
+    def crossterm_ind_to_resids(self):
         pass
 
     @abstractmethod
