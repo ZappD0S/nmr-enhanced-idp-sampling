@@ -9,11 +9,8 @@ import tempfile
 
 import numpy as np
 import MDAnalysis as mda
-from scipy import constants
 import mdtraj as mdt
 from mdtraj.formats import PDBTrajectoryFile, XTCTrajectoryFile
-from scipy.stats import gaussian_kde
-from KDEpy import FFTKDE
 
 
 from write_data_config import write_data_config
@@ -23,21 +20,24 @@ from charmm_data_builder import CharmmDataBuilder
 
 def write_cmap_tables(stream: io.TextIOBase, cmaps_dict, angles):
     for index, cmap in sorted(cmaps_dict.items(), key=lambda kv: kv[0]):
-        stream.write(f"# type {index}\n\n")
+        stream.write(f"# type {index + 1}\n\n")
 
-        for angle, row in zip(angles, cmap):
-            stream.write(f"# {angle}\n\n")
-            stream.write(" ".join(map(str, row)) + " \n\n")
+        # for angle, col in zip(angles, cmap.T, strict=True):
+        for angle, col in zip(angles, cmap, strict=True):
+            stream.write(f"# {angle}\n")
+
+            for i in range(0, len(col), 5):
+                chunk = col[i : i + 5]
+                stream.write(" ".join(map("{:.6f}".format, chunk)) + " \n")
+
+            stream.write("\n")
 
         stream.write("\n")
 
 
 def write_input_config(
     stream: io.TextIOBase,
-    # data_builder: BaseDataBuilder,
     args: argparse.Namespace,
-    # ah_tables,
-    # ah_table_fname: str,
     data_conf_fname: str,
     output_traj_fname: str,
     cmap_fname: str | None = None,
@@ -45,7 +45,8 @@ def write_input_config(
     cmap_name = "mycmap"
     Nsteps = floor(args.sim_time * 1e6 / args.time_step)
 
-    inv_kappa = np.sqrt(args.conc) / 3.04
+    # inv_kappa = np.sqrt(args.conc) / 3.04
+    inv_kappa = 1.4
 
     stream.write(
         f"# comment\n"  #
@@ -68,19 +69,6 @@ def write_input_config(
     )
 
     stream.write("\n")
-
-    # for entry, index1, index2 in ah_tables:
-    #     stream.write(
-    #         f"pair_coeff {index1} {index2}"  #
-    #         f" table {ah_table_fname} {entry} {args.ah_cutoff}\n"
-    #     )
-
-    # stream.write("\n")
-
-    # stream.write(
-    #     f"pair_coeff * * coul/debye\n"
-    #     f"dielectric {args.dielectric}\n"
-    # )
 
     if cmap_fname is not None:
         stream.write(
@@ -109,12 +97,14 @@ def write_input_config(
         f"minimize 0.0 1.0e-8 1000 100000\n"
         f"fix 1 all nve\n"
         # TODO: make the seed configurable
-        f"fix 3 all langevin {args.temp} {args.temp} $(100.0*dt) 12345\n"
+        # f"fix 3 all langevin {args.temp} {args.temp} $(100.0*dt) 12345\n"
+        f"fix 3 all langevin {args.temp} {args.temp} 100.0 12345\n"
         # f"fix 3 all langevin {0.0} {args.temp} $(100.0*dt) 12345\n"
         # f"fix 2 all shake 0.0001 5 0 m 1.0 a 232\n"
         f"\n"
         f"dump 1 all xtc 250 {output_traj_fname}\n"
         f"run {Nsteps}\n"
+        # f"run 1000000\n"
     )
 
 
@@ -158,74 +148,6 @@ def write_configs(
 
     with open(cmap_file, "w") as f:
         write_cmap_tables(f, cmaps_dict, angles)
-
-
-def build_cmaps(ens_ref_traj, data_builder: BaseDataBuilder, args: argparse.Namespace):
-    def make_grid(cmap_points):
-        angles = np.linspace(-np.pi, np.pi, cmap_points + 1, endpoint=True)
-        return np.stack(np.meshgrid(angles, angles, indexing="ij"), axis=-1), angles
-
-    def check_inds(topo, phi_inds, psi_inds):
-        resnames = [res.name for res in topo.residues][1:-1]
-
-        for resname, phi_ind, psi_ind in zip(
-            resnames, phi_inds[:-1], psi_inds[1:], strict=True
-        ):
-            assert all(phi_ind[1:] == psi_ind[:-1])
-
-            atom1 = topo.atom(phi_ind[2])
-            atom2 = topo.atom(psi_ind[1])
-
-            assert atom1 == atom2
-            assert atom1.name == "CA"
-
-            assert atom1.residue.name == atom2.residue.name == resname
-
-    def build_phipsi(traj):
-        phi_inds, phi = mdt.compute_phi(traj)
-        psi_inds, psi = mdt.compute_psi(traj)
-
-        check_inds(traj.topology, phi_inds, psi_inds)
-
-        zero_pad = np.zeros([phi.shape[0], 1])
-        phi = np.concatenate([zero_pad, phi], axis=1)
-        psi = np.concatenate([psi, zero_pad], axis=1)
-        phipsi = np.stack([phi, psi], axis=-1).transpose([1, 0, 2])
-
-        return phipsi
-
-    R = constants.R / (constants.calorie * 1e3)
-
-    ens_traj, ref_traj = ens_ref_traj
-
-    ens_phipsi = build_phipsi(ens_traj)
-    ref_phipsi = build_phipsi(ref_traj)
-
-    cmaps_dict = {}
-
-    grid, angles = make_grid(args.cmap_points)
-
-    for ind, resids in data_builder.crossterm_ind_to_resids:
-        sel_ens_phipsi = ens_phipsi[np.asarray(resids) - 1].reshape(-1, 2)
-
-        scipy_kde = gaussian_kde(sel_ens_phipsi.T, bw_method="silverman")
-        fft_kde = FFTKDE(bw=scipy_kde.silverman_factor())
-        fft_kde.fit(sel_ens_phipsi)
-        sel_ens_dens = fft_kde.evaluate(grid.reshape(-1, 2)).reshape(grid.shape[:2])
-        sel_ens_dens = sel_ens_dens[:-1, :-1]
-
-        sel_ref_phipsi = ref_phipsi[np.asarray(resids) - 1].reshape(-1, 2)
-
-        scipy_kde = gaussian_kde(sel_ref_phipsi.T, bw_method="silverman")
-        fft_kde = FFTKDE(bw=scipy_kde.silverman_factor())
-        fft_kde.fit(sel_ref_phipsi)
-        sel_ref_dens = fft_kde.evaluate(grid.reshape(-1, 2)).reshape(grid.shape[:2])
-        sel_ref_dens = sel_ref_dens[:-1, :-1]
-
-        cmap = -R * args.temp * (np.log(sel_ens_dens) - np.log(sel_ref_dens))
-        cmaps_dict[ind] = cmap
-
-    return cmaps_dict, angles[:-1]
 
 
 def old_clean_pdb(input: io.TextIOBase, output: io.TextIOBase):
@@ -336,9 +258,6 @@ def build_parser():
 def run_sim(cwd, args):
     subprocess.run(
         [
-            "mpirun",
-            "-n",
-            str(args.n_tasks),
             (args.lmp_path if args.lmp_path is not None else "lmp"),
             "-sf",
             "gpu",
@@ -361,24 +280,16 @@ def write_ens_xtc(path, cg_atom_ids, ens_pdb_files):
         ):
             clean_pdb(raw_pdb, cleaned_pdb)
             cleaned_pdb.seek(0)
-            pdb_traj = PDBTrajectoryFile(cleaned_pdb.name)
+            pdb_traj = PDBTrajectoryFile(cleaned_pdb.name, standard_names=False)
 
         topo = pdb_traj.topology
-        cg_atoms_set = {(resid, name) for resid, name in cg_atom_ids}
-        assert len(cg_atoms_set) == len(cg_atom_ids)
+        # mdtraj_rename = {"H": "HN", "HA3": "HA1"}
 
-        mdtraj_rename = {"H": "HN", "HA3": "HA1"}
+        mdtraj_id_to_atom = {
+            (atom.residue.resSeq, atom.name): atom for atom in topo.atoms
+        }
 
-        inds = [
-            atom.index
-            for atom in topo.atoms
-            if (
-                atom.residue.index + 1,
-                mdtraj_rename[atom.name] if atom.name in mdtraj_rename else atom.name,
-            )
-            in cg_atoms_set
-        ]
-        assert len(inds) == len(cg_atoms_set)
+        inds = [mdtraj_id_to_atom[atom_id].index for atom_id in cg_atom_ids]
 
         xyz_list.append(pdb_traj.positions[0, inds])
 
@@ -390,7 +301,7 @@ def write_ens_xtc(path, cg_atom_ids, ens_pdb_files):
     xtc_traj.close()
 
 
-def run_ref_sim(init_ag_map, data_builder, args):
+def run_ref_sim(init_ag_map, data_builder, args):  #
     for init_conform_name, init_ag in init_ag_map.items():
         conform_subdir = args.output_dir / init_conform_name
         conform_subdir.mkdir(exist_ok=True)
@@ -399,7 +310,8 @@ def run_ref_sim(init_ag_map, data_builder, args):
         ref_subdir.mkdir(exist_ok=True)
 
         write_configs(ref_subdir, init_ag, data_builder, args, None)
-        run_sim(ref_subdir, args)
+        if not args.dry_run:
+            run_sim(ref_subdir, args)
 
 
 def run_cmap_sim(init_ag_map, data_builder, args, ens_traj_file, cg_pdb_file):
@@ -419,7 +331,8 @@ def run_cmap_sim(init_ag_map, data_builder, args, ens_traj_file, cg_pdb_file):
         ens_traj = mdt.load(ens_traj_file, top=cg_pdb_file)
 
         write_configs(cmap_subdir, init_ag, data_builder, args, (ens_traj, ref_traj))
-        run_sim(cmap_subdir, args)
+        if not args.dry_run:
+            run_sim(cmap_subdir, args)
 
 
 def main():

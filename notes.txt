@@ -1,2 +1,0 @@
-Here I use a damping constant of 5.
-I also make a file to test a constant of 4 (Just 5 trajectories).

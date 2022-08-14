@@ -164,7 +164,7 @@ def build_cmap_atoms(dihedrals):
             )
 
             found = True
-            atoms = dihedral1[:] + dihedral2[-1]
+            atoms = dihedral1[:] + dihedral2[-1:]
             assert len(atoms) == 5
             atoms_list.append(atoms)
 
