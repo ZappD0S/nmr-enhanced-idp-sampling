@@ -1,22 +1,27 @@
 import numpy as np
-from scipy.constants import mu_0, value, pi, h
+from scipy.constants import mu_0, value, pi, h, hbar
 
 
 class NMR_relaxation_rates:
     def __init__(self, amps, taus, B0_MHz, theta_deg=22):
-        g15N = -2.7126 * 1e7
-        g1H = value("proton gyromag. ratio")
+        g15N = -2.7126 * 1e7 # rad * s^−1 * T^−1
+        g1H = value("proton gyromag. ratio") # rad * s^−1 * T^−1
         rNH = 1.02 * 1e-10
         dCSA = -170.0 * 1e-6
 
-        # T = B0_MHz / value("proton gyromag. ratio over 2 pi")
-        # this is the new name, but it's still divded by 2 pi!
-        T = B0_MHz / value("proton gyromag. ratio in MHz/T")
+        # g15N /= 2 * np.pi
+        # g1H /= 2 * np.pi
 
-        omegaN = g15N * T
-        omegaH = g1H * T
+        B0 = B0_MHz / value("proton gyromag. ratio in MHz/T")
+
+        # omegaN = g15N / (2 * np.pi) * B0
+        # omegaH = g1H / (2 * np.pi) * B0
+        omegaN = g15N / (2 * np.pi) * B0
+        omegaH = g1H / (2 * np.pi) * B0
         omega_diff = omegaH - omegaN
         omega_sum = omegaH + omegaN
+
+        self._omegas = [omegaN, omegaH, omega_diff, omega_sum]
 
         amps = np.asarray(amps)
         taus = np.asarray(taus)
@@ -24,13 +29,14 @@ class NMR_relaxation_rates:
         # taus = np.multiply(taus, 1e-12)
 
         # ps to s
-        taus *= 1e-12
+        taus = taus * 1e-12
 
         J = self.define_J(amps, taus)
         c = dCSA * omegaN / np.sqrt(3.0)
-        d = mu_0 * h * g1H * g15N / (8 * pi**2 * rNH**3)
+        # d = mu_0 * h * g1H * g15N / (8 * pi**2 * rNH**3)
+        d = mu_0 * hbar * g1H * g15N / (4 * pi * rNH**3)
 
-        # TODO: where does 22 degrees come from?
+        # see https://doi.org/10.1021/jacs.6b02424
         theta = np.deg2rad(theta_deg)
 
         self.R1 = (
@@ -81,10 +87,14 @@ class NMR_relaxation_rates:
     #     return J
 
     def define_J(self, amps, taus):
+        amps = amps[..., None, :]
+        taus = taus[..., None, :]
+
         def J(omega):
-            n_exps = amps.size
-            all_terms = 2 / n_exps * amps * taus / (1.0 + (omega * taus) ** 2)
-            return np.sum(all_terms)
+            omega = np.asarray(omega)[..., None]
+            all_terms = 2 / 5 * amps * taus / (1.0 + (omega * taus) ** 2)
+            # all_terms = amps * taus / (1.0 + (omega * taus) ** 2)
+            return np.squeeze(np.sum(all_terms, axis=-1))
 
         return J
 

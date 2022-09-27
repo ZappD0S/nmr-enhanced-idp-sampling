@@ -58,8 +58,8 @@ pair_coeffs_row: index (SIGNED_INT | SIGNED_FLOAT) ~ 4
 // atoms_list: _inter_coeffs{"Atoms"}
 
 atoms_list: "Atoms" atoms_list_row*
-atoms_list_row: atom_index resid type charge position
-position: (SIGNED_INT | SIGNED_FLOAT)~3
+atoms_list_row: atom_index resid type charge _position
+_position: (SIGNED_INT | SIGNED_FLOAT)~3
 
 // bond_coeffs: _inter_coeffs{"Bond Coeffs"}
 // bonds_list: _inters_list{"Bonds"}

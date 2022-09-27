@@ -23,26 +23,33 @@ def cart2sph(vecs):
 
 
 def autocorr_with_err(x):
-
     mu = np.mean(x)
     sigma = np.std(x)
+    assert np.isreal(sigma)
     x = (x - mu) / sigma
 
     N = x.size
     counts = np.arange(N, 1, -1)
 
     c = correlate(x, x, mode="full")
-    c = c[N - 1 : -1].real
+    # c = c[N - 1 : -1].real
+    c = c[N - 1 : -1]
     c_mean = c / counts
 
-    x2 = x**2
+    x2 = np.abs(x) ** 2
     c2 = correlate(x2, x2, mode="full")
+    assert np.allclose(c2.imag, 0)
     c2 = c2[N - 1 : -1].real
     c2_mean = c2 / counts
 
-    std_err = np.sqrt((c2_mean - c_mean**2) / counts)
+    # assert np.all(c2_mean >= c_mean**2)
 
-    return c_mean, std_err
+    c_mean2 = np.abs(c_mean) ** 2
+    assert np.all(c2_mean >= c_mean2)
+    # std_err = np.sqrt((c2_mean - c_mean**2) / counts)
+    std_err = np.sqrt((c2_mean - c_mean2) / counts)
+
+    return c_mean.real, std_err
 
 
 def rotacf(vecs, n=2):
