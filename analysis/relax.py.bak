@@ -1,0 +1,217 @@
+import numpy as np
+
+from scipy.optimize import minimize
+from scipy.special import logsumexp, softmax
+
+from rpy2.robjects.packages import importr
+import rpy2.robjects as robjects
+from rpy2.robjects import numpy2ri
+from rpy2.robjects import default_converter
+
+
+def split_params(params):
+    # n = (params.size + 1) // 2
+    n = params.size // 2
+
+    As = np.asarray(params[:n])
+    lambdas = np.asarray(params[n:])
+    assert lambdas.size == n
+
+    return As, lambdas
+
+
+def sum_of_exps(logt, logAs, loglambdas):
+    exp_terms = np.exp(logAs[None, :] - np.exp(loglambdas[None, :] + logt[:, None]))
+    return exp_terms.sum(axis=1)
+
+
+def soe_loss(params, logt, corr, err):
+    logAs, loglambdas = split_params(params)
+
+    w = err**-2
+    return np.mean(w * (sum_of_exps(logt, logAs, loglambdas) - corr) ** 2)
+
+
+def soe_jac(params, logt, corr, err):
+    logAs, loglambdas = split_params(params)
+
+    exps = np.exp(logAs[None, :] - np.exp(loglambdas[None, :] + logt[:, None]))
+
+    logA_grads = exps
+    # lambda_grads = -t[:, None] * exps
+    loglambda_grads = -np.exp(loglambdas[None, :] + logt[:, None]) * exps
+    # grads = np.concatenate([A_grads, lambda_grads], axis=1)
+    grads = np.concatenate([logA_grads, loglambda_grads], axis=1)
+
+    f_t = sum_of_exps(logt, logAs, loglambdas)
+    w = err**-2
+    grad = 2 * grads * w[:, None] * (f_t[:, None] - corr[:, None])
+
+    return grad.mean(axis=0)
+
+
+def log_sum_of_exps(t, logAs, lambdas):
+    return logsumexp(logAs[None, :] - lambdas[None, :] * t[:, None], axis=1)
+
+
+def log_soe_loss(params, t, corr, err):
+    logAs, lambdas = split_params(params)
+
+    # the corr^2 comes from the error propagation on the log
+    w = corr**2 * err**-2
+    return np.mean(w * (log_sum_of_exps(t, logAs, lambdas) - np.log(corr)) ** 2)
+
+
+def log_soe_jac(params, t, corr, err):
+    logAs, lambdas = split_params(params)
+
+    sm = softmax(logAs[None, :] - lambdas[None, :] * t[:, None], axis=1)
+
+    logA_grads = sm
+    lambda_grads = -t[:, None] * sm
+    grads = np.concatenate([logA_grads, lambda_grads], axis=1)
+
+    f_t = log_sum_of_exps(t, logAs, lambdas)
+    w = corr**2 * err**-2
+    grad = 2 * grads * w[:, None] * (f_t[:, None] - np.log(corr[:, None]))
+
+    return grad.mean(axis=0)
+
+
+def select_data(t, corr, err):
+    assert t.size == corr.size == err.size
+    mask = np.ones_like(t, dtype=bool)
+
+    if np.any(corr < 0):
+        ind = np.argmax(corr < 0)
+        mask[ind:] = False
+
+    # inds = find_peaks(-corr[mask], prominence=1e-3, width=1e2)[0]
+
+    # if inds.size != 0:
+    #     ind = inds[0]
+    #     mask[:ind] = True
+
+    # mask &= t > 1
+    assert np.all(np.isfinite(err[mask]))
+
+    return mask
+
+
+def fit(t, corr, err, A0s, lambda0s):
+    # scale = t.max()
+    # scaled_t = t / scale
+
+    eps = np.finfo(float).eps
+    logt = np.log(t + eps)
+    scale = logt.max()
+    logt -= scale
+
+    logA0s = np.log(A0s)
+    loglambda0s = np.log(lambda0s) + scale
+
+    x0 = np.concatenate([logA0s, loglambda0s])
+
+    bounds = [(None, 0)] * A0s.size + [(None, None)] * lambda0s.size
+
+    res = minimize(
+        # log_soe_loss,
+        soe_loss,
+        x0=x0,
+        args=(logt, corr, err),
+        bounds=bounds,
+        # jac=log_soe_jac,
+        jac=soe_jac,
+    )
+    assert res.success
+
+    # As, scaled_lambdas = split_params(res.x)
+    # lambdas = scaled_lambdas / scale
+    logAs, loglambdas = split_params(res.x)
+    As = np.exp(logAs)
+    lambdas = np.exp(loglambdas - scale)
+
+    return As, lambdas
+
+
+def fit_r(t, corr, lambda0s):
+    pracma = importr("pracma")
+    numpy2ri.activate()
+
+    lambda0s = np.asarray(lambda0s)
+
+    # t_max = t.max()
+    # minexp = -np.finfo(t.dtype).minexp * np.log(2)
+
+    # if t_max > minexp:
+    #     scale =  t_max / minexp
+    #     print(scale)
+    # else:
+    #     scale = 1.0
+
+    t_r = robjects.FloatVector(t)
+    corr_r = robjects.FloatVector(corr)
+    lambda0s_r = robjects.FloatVector(lambda0s)
+
+    res = pracma.mexpfit(t_r, corr_r, lambda0s_r, const=False)
+
+    As = np.array(res.rx2("a"))
+    # A0 = np.array(res.rx2("a0"))
+    lambdas = np.array(res.rx2("b"))
+
+    print(As.shape, lambdas.shape)
+
+    assert As.shape == lambdas.shape == lambda0s.shape
+
+    return As, lambdas
+
+
+def generate_init(n_exps):
+    # A0s = 2.0 ** -(np.arange(n_exps - 1) + 1)
+    # A0s = np.append(A0s, 1 - A0s.sum())
+    A0s = 2.0 ** np.arange(n_exps)
+    A0s /= A0s.sum()
+
+    # lambda0s = np.ones(n_exps) * 1e-5
+    lambda0s = 10.0 ** np.arange(4, 0, -1)
+
+    assert A0s.size == lambda0s.size == n_exps
+    return A0s, lambda0s
+
+
+def fit_corrs(t, corrs):
+
+    n0_exps = 4
+    fit_params = {}
+
+    for key, (corr, err) in corrs.items():
+        mask = select_data(t, corr, err)
+
+        sel_t = t[mask]
+        sel_corr = corr[mask]
+        sel_err = err[mask]
+        print(key)
+
+        n_exps = n0_exps
+        while n_exps > 0:
+            A0s, lambda0s = generate_init(n_exps)
+            As, lambdas = fit(sel_t, sel_corr, sel_err, A0s, lambda0s)
+            taus = 1e-3 / lambdas
+            print(taus)
+            print(f"n_exps: {n_exps}")
+
+            # TODO: if any pair of exps is close to each other repeat with less exponents
+            # TODO: if any of the As is really small repeat with one less exp
+            if taus.max() < 100 * sel_t[-1]:
+                break
+
+            print("bad fit, repeating")
+            n_exps -= 1
+
+        if n0_exps == 0:
+            raise Exception
+
+        fit_params[key] = (As, taus)
+        print()
+
+    return fit_params

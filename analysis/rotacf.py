@@ -34,6 +34,7 @@ def autocorr_with_err(x):
     c = correlate(x, x, mode="full")
     # c = c[N - 1 : -1].real
     c = c[N - 1 : -1]
+    assert np.isclose(c[0], np.sum(x**2))
     c_mean = c / counts
 
     x2 = np.abs(x) ** 2

@@ -1,12 +1,14 @@
 from pathlib import Path
 import subprocess
 import tempfile
+import pandas as pd
 from parse import compile, parse
 import numpy as np
 from scipy.constants import value, h, mu_0
+import concurrent.futures
 
 
-PALES_PATH = "/home/gzappavigna/pales/pales"
+PALES_PATH = "/home/gzappavigna/software/pales/pales"
 
 gammas = {
     "N": -2.7126 * 1e7,
@@ -85,17 +87,19 @@ def cart2sph(vecs):
     return r, azim, polar
 
 
+eigval_fmt = compile("DATA EIGENVALUES (Axx,Ayy,Azz)   {:2.4e} {:2.4e} {:2.4e}")
+eigvec_fmt = compile("DATA EIGENVECTORS {:1}AXIS {:2.4e} {:2.4e} {:2.4e}")
+
+
 def parse_pales_eig(lines):
-    eigval_fmt = "DATA EIGENVALUES (Axx,Ayy,Azz)    {:2.4e} {:2.4e} {:2.4e}"
-    eigvec_fmt = "DATA EIGENVECTORS {:1}AXIS {:2.4e} {:2.4e} {:2.4e}"
 
     eigvals_list = []
     eigvecs_dict = {}
 
     for line in lines:
-        if (res := parse(eigval_fmt, line)) is not None:
+        if (res := eigval_fmt.parse(line)) is not None:
             eigvals_list.append(np.array(list(res)))
-        elif (res := parse(eigvec_fmt, line)) is not None:
+        elif (res := eigvec_fmt.parse(line)) is not None:
             axis, *vec = list(res)
             eigvecs_dict[axis] = np.array(vec)
 
@@ -108,46 +112,54 @@ def parse_pales_eig(lines):
     return eigvals, eigvecs
 
 
-def compute_align_tensor(tempdir, pdbs):
-    # TODO: use concurrent.futures.ThreadPoolExecutor
+def call_pales(tempdir, key, subframe):
+    pdb = tempdir / ("frame" + "_".join(str(k) for k in key) + ".pdb")
+    subframe.save(pdb)
+    assert pdb.exists()
 
-    eigvals_list = []
-    eigvecs_list = []
+    out = subprocess.run(
+        [PALES_PATH, "-pdb", str(pdb)],
+        cwd=tempdir,
+        text=True,
+        check=True,
+        capture_output=True,
+    )
 
-    with tempfile.TemporaryDirectory(delete=False) as tempdir:
-        tempdir = Path(tempdir)
+    pdb.unlink()
 
-        for pdb in pdbs:
-            proc = subprocess.Popen(
-                [PALES_PATH, "-pdb", str(pdb)],
-                cwd=tempdir,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.DEVNULL,
-                text=True,
-            )
-
-            output, _ = proc.communicate()
-            assert proc.returncode == 0
-
-            with open(tempdir / (pdb.stem + ".pales"), "w") as f:
-                f.write(output)
-
-            eigvals, eigvecs = parse_pales_eig(output.splitlines())
-            eigvals_list.append(eigvals)
-            eigvecs_list.append(eigvecs)
-
-    return np.array(eigvals_list), np.array(eigvecs_list)
+    return parse_pales_eig(out.stdout.splitlines())
 
 
-def compute_nh_indices(traj):
-    top = traj.topology
+def compute_align_tensors(subframes_dict):
+    results_dict = {}
+
+    with (
+        concurrent.futures.ProcessPoolExecutor() as executor,
+        tempfile.TemporaryDirectory() as tempdir_,
+    ):
+        tempdir = Path(tempdir_)
+        futures_to_key = {}
+
+        for key, subframe in subframes_dict.items():
+            fut = executor.submit(call_pales, tempdir, key, subframe)
+            futures_to_key[fut] = key
+
+        for fut in concurrent.futures.as_completed(futures_to_key):
+            eigvals, eigvecs = fut.result()
+            key = futures_to_key[fut]
+            results_dict[key] = (eigvals, eigvecs)
+
+    return results_dict
+
+
+def compute_nh_indices(top):
     bonds_set = {tuple(bond) for bond in top.bonds}
 
+    resids = []
     n_inds = []
     h_inds = []
 
     for res in list(top.residues):
-        # if res.index == 0 or res.name == "PRO":
         if res.name == "PRO":
             continue
 
@@ -155,60 +167,105 @@ def compute_nh_indices(traj):
         h_atom = next(atom for atom in res.atoms if atom.name == "H")
         assert (n_atom, h_atom) in bonds_set or (h_atom, n_atom) in bonds_set
 
+        resids.append(res.index)
         n_inds.append(n_atom.index)
         h_inds.append(h_atom.index)
 
-    return np.array(n_inds), np.array(h_inds)
+    return np.array(resids), np.array(n_inds), np.array(h_inds)
 
 
-def compute_rdc(traj):
-    # TODO: select frames
-    subtraj = traj
+def compute_rdc(traj, win):
 
-    with tempfile.TemporaryDirectory() as tempdir_:
-        tempdir = Path(tempdir_)
+    assert win % 2 == 1
+    half_win = win // 2
+    n_frames = len(traj)
+    n_resid = None
 
-        pdbs = []
+    subframes_dict = {}
 
-        for i, frame in enumerate(subtraj):
-            pdb = tempdir / f"trj{i}.pdb"
-            frame.save(pdb)
-            assert pdb.exists()
-            pdbs.append(pdb)
+    # TODO: this can be parallelized...
+    for i, frame in enumerate(traj):
+        if n_resid is None:
+            n_resid = frame.n_residues
+        else:
+            assert frame.n_residues == n_resid
 
-        eigvals, eigvecs = compute_align_tensor(tempdir, pdbs)
+        for j in range(half_win, n_resid - half_win):
+            inds = [
+                atom.index
+                for atom in frame.top.atoms
+                if (
+                    (j - half_win) <= atom.residue.index
+                    and atom.residue.index <= (j + half_win)
+                )
+            ]
+            subframe = frame.atom_slice(inds)
+            assert subframe.n_atoms > 0
+            subframes_dict[(i, j)] = subframe
 
-    n_inds, h_inds = compute_nh_indices(subtraj)
+    retults_dict = compute_align_tensors(subframes_dict)
 
-    n_coords = subtraj.xyz[:, n_inds]
-    h_coords = subtraj.xyz[:, h_inds]
+    inds = np.array(list(retults_dict.keys()))
+
+    data = list(retults_dict.values())
+    eigvals_list = np.array([tup[0] for tup in data])
+    eigvecs_list = np.array([tup[1] for tup in data])
+
+    eigvals = np.full((n_frames, n_resid, 3), np.nan)
+    eigvals[inds[:, 0], inds[:, 1]] = eigvals_list
+
+    eigvecs = np.full((n_frames, n_resid, 3, 3), np.nan)
+    eigvecs[inds[:, 0], inds[:, 1]] = eigvecs_list
+
+    nh_resids, _, _ = compute_nh_indices(traj[0].top)
+    mask = (half_win <= nh_resids) & (nh_resids < n_resid - half_win)
+
+    eigvals = eigvals[:, nh_resids[mask]]
+    eigvecs = eigvecs[:, nh_resids[mask]]
+
+    assert not np.isnan(eigvals).any()
+    assert not np.isnan(eigvecs).any()
+
+    n_coords_list = []
+    h_coords_list = []
+
+    for frame in traj:
+        nh_resids_, n_inds, h_inds = compute_nh_indices(frame.top)
+        assert np.all(nh_resids == nh_resids_)
+        n_coords_list.append(frame.xyz[:, n_inds[mask]])
+        h_coords_list.append(frame.xyz[:, h_inds[mask]])
+
+    n_coords = np.concatenate(n_coords_list, axis=0)
+    h_coords = np.concatenate(h_coords_list, axis=0)
+
     nh_vecs = h_coords - n_coords
-
-    nh_vecs = np.moveaxis(nh_vecs, 1, 0)
 
     # if we multiply a vector by the transpose of the matrix whose columns are the alignment tensor eigenvectors
     # we take a vector expressed in the laboratory frame to the basis formed by the alignment tensor eigenvectors
     # eigvecs.T @ nh_vec
-    rot_nh_vecs = np.einsum("ijk,jkl->ijl", nh_vecs, eigvecs)
+    # rot_nh_vecs = np.einsum("ijk,jkl->ijl", nh_vecs, eigvecs)
+    rot_nh_vecs = np.einsum("ijk,ijkl->ijl", nh_vecs, eigvecs)
 
     _, phis, thetas = cart2sph(rot_nh_vecs)
 
-    Axx, Ayy, Azz = np.moveaxis(eigvals, 1, 0)
+    Axx, Ayy, Azz = np.moveaxis(eigvals, 2, 0)
 
     Aa = Azz
     Ar = 2 / 3 * (Axx - Ayy)
 
-    Dmax = -(gammas["N"] * gammas["H"] * h * mu_0) / (
-        8 * np.pi**3 * bond[("N", "H")] ** 3
+    g15N = gammas["N"]
+    g1H = gammas["H"]
+    Dmax = (g15N * g1H * h * mu_0) / (8 * np.pi**3 * bond[("N", "H")] ** 3)
+
+    rdc = Dmax * (
+        0.5 * Aa * (3 * np.cos(thetas) ** 2 - 1)
+        + 0.75 * Ar * np.sin(thetas) ** 2 * np.cos(2 * phis)
     )
 
-    rdc = np.mean(
-        Dmax
-        * (
-            0.5 * Aa[None, ...] * (3 * np.cos(thetas) ** 2 - 1)
-            + 0.75 * Ar[None, ...] * np.sin(thetas) ** 2 * np.cos(2 * phis)
-        ),
-        axis=1,
-    )
+    df = pd.DataFrame(data=rdc, index=range(len(traj)), columns=nh_resids[mask] + 1)
+    df.columns.name = "resSeq"
+    df.index.name = "frame"
 
-    return rdc
+    df = df.stack().to_frame("value")
+
+    return df

@@ -161,25 +161,22 @@ def compute_pdf(phipsi, grid, angles, slc, bw):
     return pdf
 
 
-def compute_pdf_r(phipsi, resolution, factor=10):
+def compute_pdf_r(phipsi, resolution, Hpi=None, factor=10):
     ks = importr("ks")
 
-    phipsi_r = robjects.r.array(
-        robjects.FloatVector(phipsi.flatten("F").tolist()),
-        dim=robjects.IntVector(phipsi.shape),
-    )
+    numpy2ri.activate()
 
-    Hpi = ks.Hpi(x=phipsi_r)
+    if Hpi is None:
+        Hpi = np.array(ks.Hpi(x=phipsi))
 
-    pi = robjects.r.pi[0]
-    xmin = robjects.FloatVector([-pi, -pi])
-    xmax = robjects.FloatVector([pi, pi])
+    xmin = np.array([-np.pi, -np.pi])
+    xmax = np.array([np.pi, np.pi])
 
     # stride = ceil(151 / resolution)
 
-    gridsize = robjects.IntVector([resolution * factor + 1, resolution * factor + 1])
+    gridsize = np.array([resolution * factor + 1, resolution * factor + 1])
 
-    k = ks.kde(x=phipsi_r, H=Hpi, gridsize=gridsize, xmin=xmin, xmax=xmax, density=True)
+    k = ks.kde(x=phipsi, H=Hpi, gridsize=gridsize, xmin=xmin, xmax=xmax, density=True)
 
     pdf = np.array(k.rx2("estimate"))
     xangles = np.array(k.rx2("eval.points").rx2(1))
@@ -191,27 +188,23 @@ def compute_pdf_r(phipsi, resolution, factor=10):
     # print("vol:", vol)
     # pdf /= vol
 
-    return pdf[:-1:factor, :-1:factor], xangles[:-1:factor]
+    return pdf[:-1:factor, :-1:factor], xangles[:-1:factor], Hpi
 
 
 def build_cmap(
     ens_phipsi,
     ref_phipsi,
     basepath,
-    ens_bw=None,
-    ref_bw=None,
     resolution: int = 24,
-    # eps: float = 1.1615857613434818e-09,
-    Emin = -7.0,
-    temp: float = 300.0,
+    Emin=-7.0,
+    temp: float = 298.0,
 ):
     R = constants.R / (constants.calorie * 1e3)
 
-    # factor = 100
-    # frac = 0.2
+    frac = 0.2
 
-    # ens_phipsi = extend_phipsi(ens_phipsi, frac)
-    # ref_phipsi = extend_phipsi(ref_phipsi, frac)
+    ens_phipsi = extend_phipsi(ens_phipsi, frac)
+    ref_phipsi = extend_phipsi(ref_phipsi, frac)
 
     # grid, angles, slc = make_grid(resolution, factor, frac)
 
@@ -219,7 +212,7 @@ def build_cmap(
     #     ref_bw = find_bw(ref_phipsi)
 
     # ref_pdf = compute_pdf(ref_phipsi, grid, angles, slc, ref_bw)
-    ref_pdf, _ = compute_pdf_r(ref_phipsi, resolution)
+    ref_pdf, _, _ = compute_pdf_r(ref_phipsi, resolution)
 
     plt.imshow(ref_pdf.T, origin="lower", cmap="seismic", norm=colors.CenteredNorm())
     plt.colorbar()
@@ -233,7 +226,7 @@ def build_cmap(
     # if ens_bw is None:
     #     ens_bw = find_bw(ens_phipsi)
 
-    ens_pdf, angles = compute_pdf_r(ens_phipsi, resolution)
+    ens_pdf, angles, _ = compute_pdf_r(ens_phipsi, resolution)
 
     plt.imshow(ens_pdf.T, origin="lower", cmap="seismic", norm=colors.CenteredNorm())
     plt.colorbar()
@@ -243,6 +236,7 @@ def build_cmap(
     RT = R * temp
     eps = np.exp(Emin / RT)
     cmap = -RT * (np.log(eps + ens_pdf) - np.log(eps + ref_pdf))
+    # cmap = -RT * np.log((ens_pdf + eps) / (ref_pdf + eps))
 
     plt.imshow(cmap.T, origin="lower", cmap="seismic", norm=colors.CenteredNorm())
     plt.colorbar()

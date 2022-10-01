@@ -1,19 +1,9 @@
 from pathlib import Path
-import os
-import shlex
 import subprocess
 
 import pandas as pd
 from parse import compile
-
-
-def xvg_find_first_line(f):
-    for i, line in enumerate(f):
-        stripped = line.lstrip()
-        if not (stripped.startswith("#") or stripped.startswith("@")):
-            return i
-
-    raise Exception
+from gmx_utils import build_gmx_env, xvg_find_first_line
 
 
 def parse_colnames(f):
@@ -47,17 +37,11 @@ def gmx_energy(
         "Temp",
         "Pressure",
     ],
+    gmxrc=None,
 ):
-    gmxrc = "/usr/local/gromacs/bin/GMXRC"
-
-    command = shlex.split(f"bash -c 'source {gmxrc} && env'")
-    p = subprocess.run(command, text=True, capture_output=True)
-
-    gmx_env = os.environ.copy()
-
-    for line in p.stdout.splitlines():
-        (key, _, value) = line.partition("=")
-        gmx_env[key] = value
+    env = None
+    if gmxrc is not None:
+        env = build_gmx_env(gmxrc)
 
     output = Path("/tmp/output.xvg")
 
@@ -67,14 +51,15 @@ def gmx_energy(
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
         text=True,
-        env=gmx_env,
+        env=env,
     )
     proc.communicate("\n".join(params) + "\n\n")
 
     with output.open() as f:
         lines = f.readlines()
-        names = parse_colnames(lines)
-        lines_to_skip = xvg_find_first_line(lines)
+
+    names = parse_colnames(lines)
+    lines_to_skip = xvg_find_first_line(lines)
 
     print(lines_to_skip)
     print(names)
