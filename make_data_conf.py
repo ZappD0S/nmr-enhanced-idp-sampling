@@ -86,8 +86,9 @@ def write_data_config(
     stream: io.TextIOBase,
     topo: "Topology",
     init_ag: mda.AtomGroup,
-    name,
-    box_half_width,
+    name: str,
+    box_half_width: int,
+    use_cmap: bool,
 ):
     stream.write(
         f"LAMMPS {name} input data\n"  #
@@ -97,7 +98,12 @@ def write_data_config(
         f"{topo.n_angles} angles\n"
         f"{topo.n_dihedrals} dihedrals\n"
         f"0 impropers\n"
-        f"{topo.n_crossterms} crossterms"
+    )
+
+    if use_cmap:
+        stream.write(f"{topo.n_crossterms} crossterms\n")
+
+    stream.write(
         f"\n"
         f"{topo.n_atom_types} atom types\n"
         f"{topo.n_bond_types} bond types\n"
@@ -118,7 +124,9 @@ def write_data_config(
     write_list(stream, "Bonds", topo.build_bonds_list())
     write_list(stream, "Angles", topo.build_angles_list())
     write_list(stream, "Dihedrals", topo.build_dihedrals_list())
-    write_list(stream, "CMAP", topo.build_cmap_crossterms_list())
+
+    if use_cmap:
+        write_list(stream, "CMAP", topo.build_cmap_crossterms_list())
 
     return topo
 

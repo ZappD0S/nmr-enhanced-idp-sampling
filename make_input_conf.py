@@ -12,7 +12,8 @@ import numpy as np
 import MDAnalysis as mda
 from MDAnalysis.lib.util import convert_aa_code
 from MDAnalysis.analysis.dihedrals import Ramachandran
-from scipy import ndimage
+from scipy import ndimage, stats
+
 # from astropy.convolution import convolve
 # from astropy.convolution.kernels import Gaussian2DKernel
 
@@ -147,9 +148,7 @@ def write_cmap_tables(stream: io.TextIOBase, cmaps_dict, bins):
         stream.write("\n")
 
 
-def write_ashbaugh_hatch_tables(
-    stream: io.TextIOBase, ashbaugh_hatch_tables
-):
+def write_ashbaugh_hatch_tables(stream: io.TextIOBase, ashbaugh_hatch_tables):
     # TODO: comment?
     stream.write("# comment\n\n")
 
@@ -171,10 +170,10 @@ def write_input_config(
     topo: Topology,
     args: argparse.Namespace,
     ah_tables,
-    ah_table_file: pathlib.Path,
-    data_conf_file: pathlib.Path,
-    output_traj_file: pathlib.Path,
-    cmap_file: pathlib.Path | None = None,
+    ah_table_fname: str,
+    data_conf_fname: str,
+    output_traj_fname: str,
+    cmap_fname: str | None = None,
 ):
     # TODO: where does this value come from?
     kappa = 3.04 / np.sqrt(args.concentration)
@@ -211,27 +210,28 @@ def write_input_config(
     for entry, index1, index2 in ah_tables:
         stream.write(
             f"pair_coeff {index1} {index2}"  #
-            f" table {ah_table_file} {entry} {args.ah_cutoff}\n"
+            f" table {ah_table_fname} {entry} {args.ah_cutoff}\n"
         )
 
     stream.write("\n")
 
     stream.write(
-        f"pair_coeff * * coul/debye\n" f"dielectric {args.dielectric}\n"
+        f"pair_coeff * * coul/debye\n"
+        f"dielectric {args.dielectric}\n"
         f"bond_style harmonic\n"
         f"angle_style harmonic\n"
         f"dihedral_style fourier\n"
     )
 
-    if cmap_file is not None:
+    if cmap_fname is not None:
         stream.write(
-            f"fix {cmap_name} all cmap {cmap_file}\n"  #
+            f"fix {cmap_name} all cmap {cmap_fname}\n"  #
             f"fix_modify {cmap_name} energy yes\n"
         )
 
     stream.write(
-        f"read_data {data_conf_file} add append"
-        + (f" fix {cmap_name} crossterm CMAP" if cmap_file is not None else "")
+        f"read_data {data_conf_fname} add append"
+        + (f" fix {cmap_name} crossterm CMAP" if cmap_fname is not None else "")
         + "\n"
     )
 
@@ -250,7 +250,7 @@ def write_input_config(
         # TODO: what is the random number?
         f"fix 2 all langevin {args.temp} {args.temp} {args.langevin_damp} {randint(1, 100000)}\n"
         f"\n"
-        f"dump 1 all xtc 250 {output_traj_file}\n"
+        f"dump 1 all xtc 250 {output_traj_fname}\n"
         f"run {Nsteps}\n"
     )
 
@@ -259,12 +259,12 @@ def write_configs(
     subfolder: pathlib.Path,
     init_ag,
     topo,
-    u_ens_traj,
     args: argparse.Namespace,
+    u_ens_traj: mda.Universe | None = None,
 ):
     # for now we leave these hardcoded...
     name = "CG"
-    output_traj_file = subfolder / "traj.xtc"
+    output_traj_fname = "traj.xtc"
 
     main_config_file = subfolder / f"in.{name}"
     data_conf_file = subfolder / f"data.{name}"
@@ -279,14 +279,14 @@ def write_configs(
             topo,
             args,
             ashbaugh_hatch_tables,
-            ashbaugh_hatch_table_file,
-            data_conf_file,
-            output_traj_file,
-            cmap_file,
+            ashbaugh_hatch_table_file.name,
+            data_conf_file.name,
+            output_traj_fname,
+            cmap_file.name if cmap_file is not None else None,
         )
 
     with open(data_conf_file, "w") as f:
-        write_data_config(f, topo, init_ag, name, args.box_half_width)
+        write_data_config(f, topo, init_ag, name, args.box_half_width, args.use_cmap)
 
     with ashbaugh_hatch_table_file.open("w") as f:
         write_ashbaugh_hatch_tables(f, ashbaugh_hatch_tables)
@@ -294,9 +294,11 @@ def write_configs(
     if cmap_file is None:
         return
 
-    cmaps_dict, bins = build_cmaps(
-        u_ens_traj, topo.crossterm_type_to_index, args
-    )
+    if u_ens_traj is None:
+        # TODO: add messagge..
+        raise Exception
+
+    cmaps_dict, bins = build_cmaps(u_ens_traj, topo.crossterm_type_to_index, args)
 
     with open(cmap_file, "w") as f:
         write_cmap_tables(f, cmaps_dict, bins)
@@ -338,7 +340,7 @@ def build_ashbaugh_hatch_tables(atom_type_to_index, args: argparse.Namespace):
             case _:
                 raise Exception
 
-        return (r, e, l, name)
+        return r, e, l, name
 
     tables = {}
     rs = np.linspace(args.ah_min_dist, args.ah_cutoff, args.ah_points)
@@ -347,8 +349,8 @@ def build_ashbaugh_hatch_tables(atom_type_to_index, args: argparse.Namespace):
         _, atom_type1, _ = key1
         _, atom_type2, _ = key2
 
-        (r1, e1, l1, name1) = compute_params(key1)
-        (r2, e2, l2, name2) = compute_params(key1)
+        r1, e1, l1, name1 = compute_params(key1)
+        r2, e2, l2, name2 = compute_params(key1)
 
         entry = name1 + "_" + name2
 
@@ -383,9 +385,7 @@ def build_ashbaugh_hatch_tables(atom_type_to_index, args: argparse.Namespace):
     return tables
 
 
-def build_cmaps(
-    u_ens_traj, crossterm_type_to_index, args: argparse.Namespace
-):
+def build_cmaps(u_ens_traj, crossterm_type_to_index, args: argparse.Namespace):
     RT = 1.98720425864083e-3 * args.temp
     # the last element of bins is just 180,
     # it's only needed for np.histogram2d to work correctly
@@ -455,7 +455,7 @@ def clean_pdb(input: io.TextIOBase, output: io.TextIOBase):
         output.write(match[0] + "\n")
 
 
-def run():
+def main():
     parser = argparse.ArgumentParser(description="What the program does")
 
     parser.add_argument("--topo-pdb", type=str)
@@ -507,7 +507,7 @@ def run():
 
     sim_params_group = parser.add_argument_group("Simulation parameters")
     sim_params_group.add_argument(
-        "--sim-time", nargs="?", type=float, default=300.0, help="in nanoseconds"
+        "--sim-time", nargs="?", type=float, default=500.0, help="in nanoseconds"
     )
     sim_params_group.add_argument(
         "-ts", "--time-step", nargs="?", type=float, default=4.0, help="in femtoseconds"
@@ -520,28 +520,22 @@ def run():
         help="in nanometers (check..)",
     )
 
-    args = parser.parse_args(
-        """
-        --topo-pdb CG.pdb
-        --output-dir runs/
-        --use-cmap
-        --n-tasks 1
-        --ens-traj /data/vschnapka/202310-CMAP-HPS/MeV-NT/MeV_NT_ens/ensemble_200_1/ensemble_200_1.xtc
-        --target-dist /data/vschnapka/202310-CMAP-HPS/reference_dih/all-rama-ref.out
-        --lmp-path /home/gzappavigna/lammps/build/lmp_custom
-        ensemble/1.pdb
-        """.split()
-    )
+    args = parser.parse_args()
 
     if args.use_cmap and not (args.target_dist and args.ens_traj):
         parser.error("TODO")
 
     args.output_dir.mkdir(exist_ok=True)
     topo_json_file = args.output_dir / "topo.json"
+    cg_pdb = args.output_dir / "cg.pdb"
 
     if args.topo_pdb is not None:
         u_topo = mda.Universe(args.topo_pdb, format="PDB", guess_bonds=True)
         topo = Topology.from_pdb(u_topo)
+
+        ref_ag = u_topo.atoms[list(topo.atom_to_type)]
+        cg_pdb.touch(exist_ok=True)
+        ref_ag.write(cg_pdb)
 
         with topo_json_file.open("w") as f:
             topo.to_json(f)
@@ -552,6 +546,15 @@ def run():
         except FileNotFoundError:
             # TODO add message..
             raise Exception
+
+    if args.use_cmap:
+        output_dir = args.output_dir / "cmap"
+        u_ens_traj = mda.Universe(cg_pdb, args.ens_traj)
+    else:
+        output_dir = args.output_dir / "ref"
+        u_ens_traj = None
+
+    output_dir.mkdir(exist_ok=True)
 
     for init_conf in args.init_confs:
         cleaned_pdb = io.StringIO()
@@ -565,14 +568,10 @@ def run():
         # select the atoms used in the simulation
         init_ag = u_init.atoms[list(topo.atom_to_type)]
 
-        with tempfile.NamedTemporaryFile(suffix=".pdb") as tmp_pdb:
-            init_ag.write(tmp_pdb.name)
-            u_ens_traj = mda.Universe(tmp_pdb.name, args.ens_traj)
-
-        subfolder = args.output_dir / init_conf.stem
+        subfolder = output_dir / init_conf.stem
         subfolder.mkdir(exist_ok=True)
 
-        write_configs(subfolder, init_ag, topo, u_ens_traj, args)
+        write_configs(subfolder, init_ag, topo, args, u_ens_traj)
 
         subprocess.run(
             [
@@ -588,3 +587,7 @@ def run():
             stdout=subprocess.DEVNULL,
             cwd=subfolder,
         )
+
+
+if __name__ == "__main__":
+    main()
