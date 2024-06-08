@@ -5,14 +5,14 @@ langdamp=float(sys.argv[1])
 pdb = "CG.pdb"
 conc = 0.15 #salt, M
 CO_charges = 30.0 #cut-off Coulomb/Debye/GPU
-diel = 78.5 # for water, dielectric constant 
+diel = 78.5 # for water, dielectric constant
 NP = 7501 #number of points in non-bonded tables
 CO_NB = 30.0 #cut-off non-bonded interactions, A
-epsilon = 0.2 #Kcal/mol, energy scale of non-bonded interactions 
+epsilon = 0.2 #Kcal/mol, energy scale of non-bonded interactions
 rminNB = 0.5 # A
 rmaxNB = 30.0 # A
 #langdamp = 200.0 # in fs
-T = 298.0 # 
+T = 298.0 #
 trajT = 500 # ns
 tstep = 4.0 # fs
 XTC = '/data/vschnapka/202310-CMAP-HPS/MeV-NT/MeV_NT_ens/ensemble_200_1/ensemble_200_1.xtc'
@@ -75,9 +75,9 @@ charges_dict = {'A':0, 'R':1, 'N':0, 'D':-1, 'C':0,
 #masses
 #these are the masses of side chains
 masses_dict = {'A':15.0347, 'R':100.1431, 'N':58.0597, 'D':59.0445, 'C':47.0947,
-                'Q':72.0865, 'E':73.0713, 'G':1.0079+12.011/2., #'G':1.0079, 
+                'Q':72.0865, 'E':73.0713, 'G':1.0079+12.011/2., #'G':1.0079,
                 'H':81.0969, 'I':57.1151,
-                        'L':57.1151, 'K':72.1297, 'M':75.1483, 'F':91.1323, 'P':41.0725, 'S':31.0341, 'T':45.0609, 
+                        'L':57.1151, 'K':72.1297, 'M':75.1483, 'F':91.1323, 'P':41.0725, 'S':31.0341, 'T':45.0609,
                 'W':130.1689, 'Y':107.1317, 'V':43.0883}
 
 #side-chain r0 from M. Levitt J Mol Biol 1976 (derived from Clothia 1975)
@@ -165,7 +165,7 @@ with open("data.CG", "w") as tf:
     tf.write(str(natoms)+" atoms\n")
     nbonds = natoms-1
     tf.write(str(nbonds)+" bonds\n")
-    #this counts backbone dihs 
+    #this counts backbone dihs
     ndih = 0
     nres = 0
     for n, el in enumerate(atomtype):
@@ -185,13 +185,13 @@ with open("data.CG", "w") as tf:
     if "PRO" in [el.decode() for el in sequence]:
         nattypes += 1
     tf.write(str(nattypes)+" atom types\n")
-    #for each AA type we have specific N-CA, CA-CB and CA-C bonds 
+    #for each AA type we have specific N-CA, CA-CB and CA-C bonds
     #plus a generic C-N bond
     nbondtypes = 3*len(set(sequence))+1
     tf.write(str(nbondtypes)+" bond types\n")
-    nangletypes = 5 #N-CA-CO, CA-CO-N, CO-N-CA, N-CA-CB, C-CA-CB 
+    nangletypes = 5 #N-CA-CO, CA-CO-N, CO-N-CA, N-CA-CB, C-CA-CB
     tf.write(str(nangletypes)+" angle types\n")
-    
+
     ndihs=1+(nres-1)*2 #a generic omega + residue-specific phi and psi
     tf.write(str(ndihs)+" dihedral types\n")
     tf.write("\n")
@@ -221,8 +221,8 @@ with open("data.CG", "w") as tf:
     if "PRO" in [el.decode() for el in sequence]:
         tf.write(str(2*len(set(sequence))+3)+" 14.007\n") # PRO does not have HN...
     tf.write("\n")
-    
-    
+
+
     tf.write("Bond Coeffs # harmonic\n")
     tf.write("\n")
     temp=1
@@ -345,7 +345,7 @@ with open("data.CG", "w") as tf:
             row=row+angletype+" "+str(n+1)+" "+str(n+3)+" "+str(n+4)+"\n"
             tf.write(row)
             index=index+1
-        
+
     #now add angles involving CBs/2HA
     for n in range(natoms-2):
         row=str(index)+" "
@@ -400,7 +400,7 @@ with open("data.CG", "w") as tf:
     #FMangles = np.genfromtxt(FMfile)
     #NpointsFM = int(len(FMangles)/nres)
     u = mda.Universe(PDB, XTC)
-    
+
     delta = int(360/NCMAP)
     bin_i = [n for n in range(-180, 179, delta)]
     #write CMAP file
@@ -426,27 +426,27 @@ with open("data.CG", "w") as tf:
                     indsFMphi = np.digitize(FMphi, bin_i)
 
                     FM_rama = []
-                    
+
                     for bcounter, bi in enumerate(bin_i): #loop over psi, calculate values
                         selectedFMpsi = [el for acounter, el in enumerate(FMpsi) if indsFMphi[acounter]==bcounter+1]
                         indsFMpsi = np.digitize(selectedFMpsi, bin_i)
                         unique, counts = np.unique(indsFMpsi, return_counts=True)
                         counts = dict(zip(unique, counts))
-                        popFM = [counts[acounter+1]/NpointsFM if (acounter+1) in counts.keys() else 1e-5 #0 #1e-4#1e-12 
+                        popFM = [counts[acounter+1]/NpointsFM if (acounter+1) in counts.keys() else 1e-5 #0 #1e-4#1e-12
                                      for acounter, el in enumerate(bin_i)]
                         FM_rama.append(popFM)
-                    
+
                     #convolve with Gaussian kernel
                     FM_rama = convolve(FM_rama, Gaussian2DKernel(x_stddev=0.3, y_stddev=0.3), boundary='extend')
                     FM_rama = np.abs(FM_rama)
                     FM_rama = np.array(FM_rama)/np.sum(np.sum(FM_rama))
-                    
+
                     all_values = [[-RT*np.log(a/b) for a, b in zip(FM_rama[bc], ref_rama[bc])] for bc in range(NCMAP)]
-                    
+
 #                     all_values = convolve(all_values, Gaussian2DKernel(x_stddev=0.15, y_stddev=0.15), boundary='extend')
 #                     all_values = np.abs(all_values)
 #                     all_values = np.array(all_values)/np.sum(np.sum(all_values))
-                   
+
                     np.savetxt(str(res_numbers[n+1])+".cmap", all_values)
                     np.savetxt(str(res_numbers[n+1])+".rama", FM_rama)
 
@@ -454,7 +454,7 @@ with open("data.CG", "w") as tf:
                     for bcounter, bi in enumerate(bin_i): #loop over psi, write smoothed values to file
                         tf2.write("# "+str(bi)+"\n")
                         tf2.write("\n")
-                        
+
                         values = all_values[bcounter]
                         row =""
                         for acounter in range(len(bin_i)):
@@ -469,7 +469,7 @@ with open("data.CG", "w") as tf:
                                 row = ""
                         tf2.write("\n")
                     temp += 1
-                        
+
 
 with open("in.CG", "w") as tf:
     tf.write("# test 4BR \n")
@@ -481,7 +481,7 @@ with open("in.CG", "w") as tf:
     tf.write("\n")
     tf.write("special_bonds charmm \n")
     kappa = 3.04/np.sqrt(conc)
-    
+
     nrestype = len(list(set(sequence)))
     tf.write("pair_style hybrid/overlay table linear "+str(NP)+" coul/debye "+str(1./kappa)+" "+str(CO_charges)+"\n")
     with open("Ashbaugh-Hatch.table", "w") as tf2:
@@ -514,7 +514,7 @@ with open("in.CG", "w") as tf:
                     el1 = "gen_C"
                 if n-2*nrestype==2:
                     el1 = "gen_NPRO"
-                
+
             for m in range(nattypes):
                 if m>=n:
                     if m < nrestype: #condition to be a CA
@@ -542,15 +542,15 @@ with open("in.CG", "w") as tf:
                             el2 = "gen_C"
                         if m-2*nrestype==2:
                             el2 = "gen_NPRO"
-                            
+
                     entry = el1+"_"+el2
-                    
+
                     tf.write("pair_coeff "+str(n+1)+" "+str(m+1)+" table Ashbaugh-Hatch.table "+entry+" "+str(CO_NB)+"\n")
-                        
+
                     rij = 0.5*(r1+r2)*scaling #np.sqrt(r1*r2)
                     eij = 0.5*(e1+e2) #np.sqrt(e1*e2)
                     lij = 0.5*(l1+l2)
-                        
+
                     tf2.write(entry+"\n")
                     tf2.write("N "+str(NP)+" R "+str(rminNB)+" "+str(rmaxNB)+"\n")
                     tf2.write("\n")
@@ -566,7 +566,7 @@ with open("in.CG", "w") as tf:
                         tf2.write(str(index)+" "+str(r)+" "+str(E)+" "+str(F)+"\n")
                     tf2.write("\n")
                     tf2.write("\n")
-            
+
     tf.write("pair_coeff * * coul/debye\n")
 
     tf.write("dielectric "+str(diel)+"\n")
@@ -575,7 +575,7 @@ with open("in.CG", "w") as tf:
     tf.write("fix_modify cmap energy yes\n")
     # add bond interactions
     tf.write("bond_style harmonic\n")
-    # add angle terms 
+    # add angle terms
     tf.write("angle_style harmonic\n")
     # add omega angle
     tf.write("dihedral_style fourier\n")

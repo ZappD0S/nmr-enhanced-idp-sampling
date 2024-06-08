@@ -6,6 +6,7 @@ from data_utils import (
     epsilon_dict,
     residue_masses_dict,
     charges_dict,
+    build_cmap_atoms,
 )
 from base_data_builder import BaseDataBuilder
 from pathlib import Path
@@ -66,10 +67,10 @@ class CharmmDataBuilder(BaseDataBuilder):
         self._ref_cg_ag = self._build_cg_ag(all_ag)
 
         self._all_ind_to_atom = {
-            atom.ix + 1: get_atom_id(atom) for atom in self._ref_all_ag
+            atom.ix: get_atom_id(atom) for atom in self._ref_all_ag
         }
         self._cg_atom_to_ind = {
-            get_atom_id(atom): i + 1 for i, atom in enumerate(self._ref_cg_ag)
+            get_atom_id(atom): i for i, atom in enumerate(self._ref_cg_ag)
         }
 
         data_tree = parser.parse(chm2lmp_data.read_text())
@@ -153,7 +154,7 @@ class CharmmDataBuilder(BaseDataBuilder):
         for inter_row in inter_tree.children:
             _, all_type_tok, *atom_ind_toks = inter_row.children
             all_type = int(all_type_tok.value)
-            all_atom_inds = [int(tok.value) for tok in atom_ind_toks]
+            all_atom_inds = [int(tok.value) - 1 for tok in atom_ind_toks]
             cg_atom_inds = []
 
             missing = False
@@ -165,7 +166,7 @@ class CharmmDataBuilder(BaseDataBuilder):
                     missing = True
                     break
 
-                cg_atom_inds.append(self._cg_atom_to_ind[atom_id])
+                cg_atom_inds.append(self._cg_atom_to_ind[atom_id] + 1)
 
             if missing:
                 continue
@@ -332,7 +333,7 @@ class CharmmDataBuilder(BaseDataBuilder):
                     raise Exception
 
             type_index = self._atom_type_to_index[atom_type]
-            index = self._cg_atom_to_ind[get_atom_id(atom)]
+            index = self._cg_atom_to_ind[get_atom_id(atom)] + 1
 
             atoms_list.append(
                 (
@@ -368,4 +369,18 @@ class CharmmDataBuilder(BaseDataBuilder):
         return self._dih_list
 
     def build_cmap_crossterms_list(self):
+        dihedrals = []
+        for row in self._dih_list:
+            _, _, *dih_inds = row
+            dih_atoms = self._ref_cg_ag[dih_inds]
+            dihedrals.append(dih_atoms)
+
+        cmap_atoms_list = build_cmap_atoms(dihedrals)
+
+        for cmap_atoms in cmap_atoms_list:
+
+            atom_inds = [self._cg_atom_to_ind[get_atom_id(atom)] for atom in cmap_atoms]
+
+        # TODO: we need a dict that maps cmap type to resids list (or set..)
+
         raise NotImplementedError

@@ -13,10 +13,11 @@ from MDAnalysis.lib.util import convert_aa_code
 from MDAnalysis.analysis.dihedrals import Ramachandran
 from scipy import ndimage, stats
 
+
 # from astropy.convolution import convolve
 # from astropy.convolution.kernels import Gaussian2DKernel
 
-from make_data_conf import write_data_config, Topology
+from make_data_conf import write_data_config, BaseDataBuilder, CharmmDataBuilder
 
 # TODO: move the data dict either to a diffent file or to a json file
 
@@ -137,6 +138,7 @@ def rep8(r, epsilon, sigma):
 
 
 def write_cmap_tables(stream: io.TextIOBase, cmaps_dict, bins):
+    # TODO: just for safety we should sort by index
     for res, (index, cmap) in cmaps_dict.items():
         stream.write(f"# residue {res.resname}{res.resid}, type {index}\n\n")
 
@@ -166,61 +168,53 @@ def write_ashbaugh_hatch_tables(stream: io.TextIOBase, ashbaugh_hatch_tables):
 
 def write_input_config(
     stream: io.TextIOBase,
-    topo: Topology,
+    # data_builder: BaseDataBuilder,
     args: argparse.Namespace,
-    ah_tables,
-    ah_table_fname: str,
+    # ah_tables,
+    # ah_table_fname: str,
     data_conf_fname: str,
     output_traj_fname: str,
     cmap_fname: str | None = None,
 ):
     # TODO: where does this value come from?
-    kappa = 3.04 / np.sqrt(args.concentration)
-    box_name = "mybox"
+    # kappa = 3.04 / np.sqrt(args.concentration)
+    # box_name = "mybox"
     cmap_name = "mycmap"
     Nsteps = floor(args.sim_time * 1e6 / args.time_step)
-    bhw = args.box_half_width
-    box_shape = " ".join(map(str, [-bhw, bhw] * 3))
 
     stream.write(
         f"# comment\n"  #
         f"\n"
         f"units real\n"
+        # f"package gpu 0 neigh no\n"
+        f"package gpu 0\n"
         f"atom_style full\n"
-        f"package gpu 0 neigh no\n"
-        f"region {box_name} block {box_shape}\n"
-        f"create_box {topo.n_atom_types} {box_name}"
-        f" bond/types {topo.n_bond_types}"
-        f" angle/types {topo.n_angle_types}"
-        f" dihedral/types {topo.n_dihedral_types}"
-        # TODO: what's the point of the extra stuff per atom?
-        f" extra/bond/per/atom 3"
-        f" extra/angle/per/atom 3"
-        f" extra/dihedral/per/atom 2\n"
-        f"\n"
-        f"special_bonds charmm\n"
-        f"pair_style hybrid/overlay"
-        f" table linear {args.ah_points}"
-        f" coul/debye {1.0 / kappa} {args.CO_charges}\n"
-    )
-
-    stream.write("\n")
-
-    for entry, index1, index2 in ah_tables:
-        stream.write(
-            f"pair_coeff {index1} {index2}"  #
-            f" table {ah_table_fname} {entry} {args.ah_cutoff}\n"
-        )
-
-    stream.write("\n")
-
-    stream.write(
-        f"pair_coeff * * coul/debye\n"
-        f"dielectric {args.dielectric}\n"
         f"bond_style harmonic\n"
-        f"angle_style harmonic\n"
-        f"dihedral_style fourier\n"
+        f"angle_style charmm\n"
+        f"dihedral_style charmm\n"
+        f"special_bonds charmm\n"
+        f"\n"
+        f"pair_style lj/charmm/coul/long 8.0 10.0\n"
+        f"pair_modify mix arithmetic\n"
+        # f"suffix off\n"
+        f"kspace_style pppm 1e-4\n"
+        # f"suffix on\n"
     )
+
+    stream.write("\n")
+
+    # for entry, index1, index2 in ah_tables:
+    #     stream.write(
+    #         f"pair_coeff {index1} {index2}"  #
+    #         f" table {ah_table_fname} {entry} {args.ah_cutoff}\n"
+    #     )
+
+    # stream.write("\n")
+
+    # stream.write(
+    #     f"pair_coeff * * coul/debye\n"
+    #     f"dielectric {args.dielectric}\n"
+    # )
 
     if cmap_fname is not None:
         stream.write(
@@ -229,7 +223,7 @@ def write_input_config(
         )
 
     stream.write(
-        f"read_data {data_conf_fname} add append"
+        f"read_data {data_conf_fname}"
         + (f" fix {cmap_name} crossterm CMAP" if cmap_fname is not None else "")
         + "\n"
     )
@@ -238,16 +232,17 @@ def write_input_config(
 
     stream.write(
         f"neighbor 2.0 bin\n"
-        f"neigh_modify delay 5\n"
+        f"neigh_modify delay 5 every 1\n"
         f"\n"
         f"timestep {args.time_step}\n"
         f"thermo_style multi\n"
-        f"thermo 50\n"
+        f"thermo 1000\n"
         f"\n"
         f"minimize 1.0e-4 1.0e-6 10000 100000\n"
         f"fix 1 all nve\n"
-        # TODO: what is the random number?
-        f"fix 2 all langevin {args.temp} {args.temp} {args.langevin_damp} {randint(1, 100000)}\n"
+        # f"fix 2 all shake 0.0001 5 0 m 1.0 a 232\n"
+        # TODO: what is the random number? -> it's almost certainly the seed..
+        f"fix 3 all langevin {args.temp} {args.temp} {args.langevin_damp} {randint(1, 100000)}\n"
         f"\n"
         f"dump 1 all xtc 250 {output_traj_fname}\n"
         f"run {Nsteps}\n"
@@ -256,8 +251,8 @@ def write_input_config(
 
 def write_configs(
     subfolder: pathlib.Path,
-    init_ag,
-    topo,
+    init_ag: mda.AtomGroup,
+    data_builder: BaseDataBuilder,
     args: argparse.Namespace,
     u_ens_traj: mda.Universe | None = None,
 ):
@@ -268,27 +263,29 @@ def write_configs(
     main_config_file = subfolder / f"in.{name}"
     data_conf_file = subfolder / f"data.{name}"
     cmap_file = subfolder / f"{name}.cmap" if args.use_cmap else None
-    ah_table_file = subfolder / "Ashbaugh-Hatch.table"
+    # ah_table_file = subfolder / "Ashbaugh-Hatch.table"
 
-    ah_tables = build_ashbaugh_hatch_tables(topo.atom_type_to_index, args)
+    # ah_tables = build_ashbaugh_hatch_tables(data_builder.atom_type_to_index, args)
 
     with main_config_file.open("w") as f:
         write_input_config(
             f,
-            topo,
+            # data_builder,
             args,
-            ah_tables,
-            ah_table_file.name,
+            # ah_tables,
+            # ah_table_file.name,
             data_conf_file.name,
             output_traj_fname,
             cmap_file.name if cmap_file is not None else None,
         )
 
     with open(data_conf_file, "w") as f:
-        write_data_config(f, topo, init_ag, name, args.box_half_width, args.use_cmap)
+        write_data_config(
+            f, data_builder, init_ag, name, args.box_half_width, args.use_cmap
+        )
 
-    with ah_table_file.open("w") as f:
-        write_ashbaugh_hatch_tables(f, ah_tables)
+    # with ah_table_file.open("w") as f:
+    #     write_ashbaugh_hatch_tables(f, ah_tables)
 
     if cmap_file is None:
         return
@@ -297,10 +294,10 @@ def write_configs(
         # TODO: add messagge..
         raise Exception
 
-    cmaps_dict, bins = build_cmaps(u_ens_traj, topo.crossterm_type_to_index, args)
+    # cmaps_dict, bins = build_cmaps(u_ens_traj, topo.crossterm_type_to_index, args)
 
-    with open(cmap_file, "w") as f:
-        write_cmap_tables(f, cmaps_dict, bins)
+    # with open(cmap_file, "w") as f:
+    #     write_cmap_tables(f, cmaps_dict, bins)
 
 
 def build_ashbaugh_hatch_tables(atom_type_to_index, args: argparse.Namespace):
@@ -357,6 +354,8 @@ def build_ashbaugh_hatch_tables(atom_type_to_index, args: argparse.Namespace):
         eij = 0.5 * (e1 + e2)  # np.sqrt(e1*e2)
         # lij = 0.5 * (l1 + l2)
 
+        # TODO: why is the potential only repulsive when one of the atom is a CA or CB?
+
         # if any of the two atoms is a CA or a CB
         if {atom_type1, atom_type2} & {"CA", "CB"}:
             Es, Fs = rep8(rs, eij, rij)
@@ -405,6 +404,9 @@ def build_cmaps(u_ens_traj, crossterm_type_to_index, args: argparse.Namespace):
     # let's experiment with KDE
 
     for res, phi_psi_ens in zip(u_ens_traj.residues[1:-1], angles):
+        # kde = stats.gaussian_kde(phi_psi_ens)
+        # ens_rama = kde.evaluate(bins[:-1])
+
         ens_rama, _, _ = np.histogram2d(*phi_psi_ens, bins=bins, density=True)
         ens_rama[ens_rama == 0.0] = 1e-5
 
@@ -501,7 +503,7 @@ def build_parser():
     )
     phys_params_group.add_argument("--CO-charges", nargs="?", type=float, default=30.0)
     phys_params_group.add_argument("--dielectric", nargs="?", type=float, default=78.5)
-    phys_params_group.add_argument("-T", "--temp", nargs="?", type=float, default=298.0)
+    phys_params_group.add_argument("-T", "--temp", nargs="?", type=float, default=300.0)
     phys_params_group.add_argument("--scaling", nargs="?", type=float, default=0.66)
 
     sim_params_group = parser.add_argument_group("Simulation parameters")
@@ -531,35 +533,37 @@ def main():
         parser.error("TODO")
 
     args.output_dir.mkdir(exist_ok=True)
-    topo_json_file = args.output_dir / "topo.json"
+    # topo_json_file = args.output_dir / "topo.json"
     cg_pdb = args.output_dir / "cg.pdb"
 
-    if args.topo_pdb is not None:
-        u_topo = mda.Universe(args.topo_pdb, format="PDB", guess_bonds=True)
-        topo = Topology.from_pdb(u_topo)
+    # if args.topo_pdb is not None:
+    #     u_topo = mda.Universe(args.topo_pdb, format="PDB", guess_bonds=True)
+    #     topo = Topology.from_pdb(u_topo)
 
-        ref_ag = u_topo.atoms[list(topo.atom_to_type)]
-        cg_pdb.touch(exist_ok=True)
-        ref_ag.write(cg_pdb)
+    #     ref_ag = topo.filter_cg_atoms(u_topo.atoms)
+    #     cg_pdb.touch(exist_ok=True)
+    #     ref_ag.write(cg_pdb)
 
-        with topo_json_file.open("w") as f:
-            topo.to_json(f)
-    else:
-        try:
-            with topo_json_file.open() as f:
-                topo = Topology.read_json(f)
-        except FileNotFoundError:
-            # TODO add message..
-            raise Exception
+    #     with topo_json_file.open("w") as f:
+    #         topo.to_json(f)
+    # else:
+    #     try:
+    #         with topo_json_file.open() as f:
+    #             topo = SalviDataBuilder.read_json(f)
+    #     except FileNotFoundError:
+    #         # TODO add message..
+    #         raise Exception
 
-    if args.use_cmap:
-        output_dir = args.output_dir / "cmap"
-        u_ens_traj = mda.Universe(cg_pdb, args.ens_traj)
-    else:
-        output_dir = args.output_dir / "ref"
-        u_ens_traj = None
+    # data_builder = SalviDataBuilder()
 
-    output_dir.mkdir(exist_ok=True)
+    u_ref = mda.Universe("ch2lmp_test/step1_pdbreader.pdb")
+    data_builder = CharmmDataBuilder(
+        pathlib.Path("data_parser/data_grammar.lark"),
+        pathlib.Path("ch2lmp_test/step1_pdbreader.data"),
+        u_ref.atoms,
+    )
+
+    subfolder.mkdir(exist_ok=True)
 
     for init_conf in args.init_confs:
         cleaned_pdb = io.StringIO()
@@ -571,12 +575,27 @@ def main():
         u_init = mda.Universe(cleaned_pdb, format="PDB")
 
         # select the atoms used in the simulation
-        init_ag = u_init.atoms[list(topo.atom_to_type)]
+        init_ag = data_builder.filter_cg_atoms(u_init.atoms)
 
-        subfolder = output_dir / init_conf.stem
+        subfolder = args.output_dir / init_conf.stem
+        # TODO: maybe this is not necessary...
         subfolder.mkdir(exist_ok=True)
 
-        write_configs(subfolder, init_ag, topo, args, u_ens_traj)
+        if args.use_cmap:
+            subfolder = subfolder / "cmap"
+            u_ens_traj = mda.Universe(cg_pdb, args.ens_traj)
+        else:
+            subfolder = subfolder / "ref"
+            u_ens_traj = None
+
+        subfolder.mkdir(exist_ok=True)
+
+        init_ag.write(subfolder / (init_conf.stem + "_clean.pdb"))
+        write_configs(subfolder, init_ag, data_builder, args, u_ens_traj)
+
+        if args.dry_run:
+            print("ok")
+            continue
 
         subprocess.run(
             [

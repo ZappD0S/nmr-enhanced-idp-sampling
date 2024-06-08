@@ -1,59 +1,16 @@
-import io
 import ujson
 from ast import literal_eval
 
-import MDAnalysis as mda
 from MDAnalysis.topology.tables import masses as atom_masses_dict
-from MDAnalysis.core.groups import Atom
 from MDAnalysis.lib.util import convert_aa_code
 from more_itertools import pairwise, triplewise
-
-
-charges_dict = {
-    "A": 0,
-    "R": 1,
-    "N": 0,
-    "D": -1,
-    "C": 0,
-    "Q": 0,
-    "E": -1,
-    "G": 0,
-    "H": 0.5,
-    "I": 0,
-    "L": 0,
-    "K": 1,
-    "M": 0,
-    "F": 0,
-    "P": 0,
-    "S": 0,
-    "T": 0,
-    "W": 0,
-    "Y": 0,
-    "V": 0,
-}
-
-residue_masses_dict = {
-    "A": 15.0347,
-    "R": 100.1431,
-    "N": 58.0597,
-    "D": 59.0445,
-    "C": 47.0947,
-    "Q": 72.0865,
-    "E": 73.0713,
-    "G": 1.0079,
-    "H": 81.0969,
-    "I": 57.1151,
-    "L": 57.1151,
-    "K": 72.1297,
-    "M": 75.1483,
-    "F": 91.1323,
-    "P": 41.0725,
-    "S": 31.0341,
-    "T": 45.0609,
-    "W": 130.1689,
-    "Y": 107.1317,
-    "V": 43.0883,
-}
+from base_data_builder import BaseDataBuilder
+from data_utils import (
+    filter_atoms,
+    get_atom_id,
+    residue_masses_dict,
+    charges_dict,
+)
 
 
 # for each C_alpha there are three dihedral angles (possible torsions of the backbone).
@@ -71,69 +28,6 @@ residue_masses_dict = {
 #      │       │
 #      │       │
 #      O       Cb
-
-
-def write_list(stream, header, data):
-    stream.write(header + "\n")
-    stream.write("\n")
-
-    for row in data:
-        stream.write(" ".join(map(str, row)) + "\n")
-
-    stream.write("\n")
-
-
-def write_data_config(
-    stream: io.TextIOBase,
-    topo: "Topology",
-    init_ag: mda.AtomGroup,
-    name: str,
-    box_half_width: int,
-    use_cmap: bool,
-):
-    stream.write(
-        f"LAMMPS {name} input data\n"  #
-        f"\n"
-        f"{topo.n_atoms} atoms\n"
-        f"{topo.n_bonds} bonds\n"
-        f"{topo.n_angles} angles\n"
-        f"{topo.n_dihedrals} dihedrals\n"
-        f"0 impropers\n"
-    )
-
-    if use_cmap:
-        stream.write(f"{topo.n_crossterms} crossterms\n")
-
-    stream.write(
-        f"\n"
-        f"{topo.n_atom_types} atom types\n"
-        f"{topo.n_bond_types} bond types\n"
-        f"{topo.n_angle_types} angle types\n"
-        f"{topo.n_dihedral_types} dihedral types\n"
-        f"\n"
-        f"{-box_half_width} {box_half_width} xlo xhi\n"
-        f"{-box_half_width} {box_half_width} ylo yhi\n"
-        f"{-box_half_width} {box_half_width} zlo zhi\n"
-        f"\n"
-    )
-
-    write_list(stream, "Masses", topo.build_atom_type_masses())
-    write_list(stream, "Bond Coeffs", topo.build_bond_coeffs())
-    write_list(stream, "Angle Coeffs", topo.build_angle_coeffs())
-    write_list(stream, "Dihedral Coeffs", topo.build_dihedral_coeffs())
-    write_list(stream, "Atoms", topo.build_atoms_list(init_ag))
-    write_list(stream, "Bonds", topo.build_bonds_list())
-    write_list(stream, "Angles", topo.build_angles_list())
-    write_list(stream, "Dihedrals", topo.build_dihedrals_list())
-
-    if use_cmap:
-        write_list(stream, "CMAP", topo.build_cmap_crossterms_list())
-
-    return topo
-
-
-def get_atom_id(atom: Atom):
-    return (atom.segid, int(atom.resid), atom.name)
 
 
 # TODO: find more specific name...
@@ -266,42 +160,6 @@ class Topology:
     def crossterm_type_to_index(self):
         return self._crossterm_type_to_index
 
-    @property
-    def n_atoms(self):
-        return len(self._atom_to_type)
-
-    @property
-    def n_bonds(self):
-        return len(self._bond_to_type)
-
-    @property
-    def n_angles(self):
-        return len(self._angle_to_type)
-
-    @property
-    def n_dihedrals(self):
-        return len(self._dihedral_to_type)
-
-    @property
-    def n_crossterms(self):
-        return len(self._crossterm_to_type)
-
-    @property
-    def n_atom_types(self):
-        return len(self._atom_type_to_index)
-
-    @property
-    def n_bond_types(self):
-        return len(self._bond_type_to_index)
-
-    @property
-    def n_angle_types(self):
-        return len(self._angle_type_to_index)
-
-    @property
-    def n_dihedral_types(self):
-        return len(self._dihedral_type_to_index)
-
     @staticmethod
     def _build_atom_to_type_dict(u):
         atom_to_type = {}
@@ -312,18 +170,18 @@ class Topology:
                 if atom.name in {"CA", "CB"}:
                     key = (atom.resname, atom.name, False)
                 elif atom.name == "C":
-                    is_terminal = (
+                    is_term = (
                         int(atom.resid) == len(u.residues) and len(atom.bonds) == 1
                     )
-                    key = (None, atom.type, is_terminal)
+                    key = (None, atom.type, is_term)
                 else:
                     key = None
             elif atom.type == "N" and atom.name == "N":
-                is_terminal = int(atom.resid) == 1 and len(atom.bonds) == 1
+                is_term = int(atom.resid) == 1 and len(atom.bonds) == 1
                 if atom.resname == "PRO":
-                    key = (atom.resname, atom.type, is_terminal)
+                    key = (atom.resname, atom.type, is_term)
                 else:
-                    key = (None, atom.type, is_terminal)
+                    key = (None, atom.type, is_term)
             elif atom.resname == "GLY" and atom.type == "H" and atom.name == "2HA":
                 key = (atom.resname, atom.type, False)
             else:
@@ -341,7 +199,7 @@ class Topology:
         unique_residues = set(u.residues.resnames)
         # residue-specific CA and CB,
         # 2 generic atoms for backbone C and N,
-        # 2 atoms for the terminals,
+        # 2 atoms for the terminal ends,
         # one special N for proline (if present)
         assert len(atom_type_to_index) == 2 * len(unique_residues) + 2 + 2 + (
             1 if "PRO" in unique_residues else 0
@@ -557,25 +415,60 @@ class Topology:
 
         return crossterm_to_type, crossterm_type_to_index
 
-    def filter_cg_atoms(self, ag):
-        return sum(
-            ag.select_atoms(f"atom " + " ".join(map(str, atom_id)))
-            for atom_id in self.atom_to_type
-        )
+
+class SalviDataBuilder(BaseDataBuilder):
+    @property
+    def n_atoms(self):
+        return len(self.topo.atom_to_type)
+
+    @property
+    def n_bonds(self):
+        return len(self._topo.bond_to_type)
+
+    @property
+    def n_angles(self):
+        return len(self._topo.angle_to_type)
+
+    @property
+    def n_dihedrals(self):
+        return len(self._topo.dihedral_to_type)
+
+    @property
+    def n_crossterms(self):
+        return len(self._topo.crossterm_to_type)
+
+    @property
+    def n_atom_types(self):
+        return len(self._topo.atom_type_to_index)
+
+    @property
+    def n_bond_types(self):
+        return len(self._topo.bond_type_to_index)
+
+    @property
+    def n_angle_types(self):
+        return len(self._topo.angle_type_to_index)
+
+    @property
+    def n_dihedral_types(self):
+        return len(self._topo.dihedral_type_to_index)
+
+    def __init__(self, topo: Topology):
+        self._topo = topo
 
     def build_atom_type_masses(self):
         atom_type_masses = []
         amd = atom_masses_dict
         rmd = residue_masses_dict
 
-        for key, index in self.atom_type_to_index.items():
+        for key, index in self._topo.atom_type_to_index.items():
             match key:
-                case (None, "N", is_terminal):
-                    mass = amd["N"] + (3 * amd["H"] if is_terminal else amd["H"])
+                case (None, "N", is_term):
+                    mass = amd["N"] + (3 * amd["H"] if is_term else amd["H"])
                 case ("PRO", "N", False):
                     mass = amd["N"]
-                case (None, "C", is_terminal):
-                    mass = amd["C"] + (2 * amd["O"] if is_terminal else amd["O"])
+                case (None, "C", is_term):
+                    mass = amd["C"] + (2 * amd["O"] if is_term else amd["O"])
                 case ("GLY", "CA", False):
                     mass = amd["C"] / 2.0 + amd["H"]
                 case (resname, "CA", False):
@@ -594,7 +487,7 @@ class Topology:
     def build_atoms_list(self, ag):
         atom_specs = []
 
-        cg_ag = self.filter_cg_atoms(ag)
+        cg_ag = self._topo.filter_cg_atoms(ag)
 
         # we assume that the center of the box is always (0, 0, 0)
         com = cg_ag.center_of_mass()
@@ -602,14 +495,14 @@ class Topology:
 
         atom_id_to_obj = {get_atom_id(atom): atom for atom in cg_ag}
 
-        for i, (atom_id, type_key) in enumerate(self.atom_to_type.items()):
-            type_index = self.atom_type_to_index[type_key]
+        for i, (atom_id, type_key) in enumerate(self._topo.atom_to_type.items()):
+            type_index = self._topo.atom_type_to_index[type_key]
 
             match type_key:
-                case (_, "N", is_terminal):
-                    charge = 1 if is_terminal else 0
-                case (None, "C", is_terminal):
-                    charge = -1 if is_terminal else 0
+                case (_, "N", is_term):
+                    charge = 1 if is_term else 0
+                case (None, "C", is_term):
+                    charge = -1 if is_term else 0
                 case (resname, "CA", False):
                     charge = 0
                 case (resname, "CB" | "H", False):
@@ -617,7 +510,6 @@ class Topology:
                 case _:
                     raise Exception
 
-            # atom = init_ag.select_atoms(f"atom " + " ".join(atom_id))[0]
             atom = atom_id_to_obj[atom_id]
             atom_specs.append(
                 (i + 1, 1, type_index, charge, *atom.position.tolist(), 0, 0, 0)
@@ -630,7 +522,7 @@ class Topology:
         # TODO: for now  we leave this hard-coded, then we'll see..
         kspring = 200  # in E/distance^2 units
 
-        for (resname, pair), index in self.bond_type_to_index.items():
+        for (resname, pair), index in self._topo.bond_type_to_index.items():
             pair_set = set(pair)
 
             if pair_set == {"N", "CA"}:
@@ -651,9 +543,11 @@ class Topology:
     def build_bonds_list(self):
         bonds = []
 
-        for i, (bond_atom_ids, bond_key) in enumerate(self.bond_to_type.items()):
-            bond_atom_inds = [self.atom_to_index[atom_id] for atom_id in bond_atom_ids]
-            bond_index = self.bond_type_to_index[bond_key]
+        for i, (bond_atom_ids, bond_key) in enumerate(self._topo.bond_to_type.items()):
+            bond_atom_inds = [
+                self._topo.atom_to_index[atom_id] for atom_id in bond_atom_ids
+            ]
+            bond_index = self._topo.bond_type_to_index[bond_key]
             bonds.append((i + 1, bond_index) + tuple(i + 1 for i in bond_atom_inds))
 
         return bonds
@@ -661,11 +555,11 @@ class Topology:
     def build_angles_list(self):
         angles = []
 
-        for i, (angle_atoms_ids, key) in enumerate(self.angle_to_type.items()):
+        for i, (angle_atoms_ids, key) in enumerate(self._topo.angle_to_type.items()):
             angle_atom_inds = [
-                self.atom_to_index[atom_id] for atom_id in angle_atoms_ids
+                self._topo.atom_to_index[atom_id] for atom_id in angle_atoms_ids
             ]
-            angle_index = self.angle_type_to_index[key]
+            angle_index = self._topo.angle_type_to_index[key]
             angles.append((i + 1, angle_index) + tuple(i + 1 for i in angle_atom_inds))
 
         return angles
@@ -673,7 +567,7 @@ class Topology:
     def build_angle_coeffs(self):
         angle_coeffs = []
 
-        for key, index in self.angle_type_to_index.items():
+        for key, index in self._topo.angle_type_to_index.items():
             match key:
                 case ("N", "CA", "CB_H"):  # 4
                     angle_coeffs.append((index, 10.0, 110.5))
@@ -693,7 +587,7 @@ class Topology:
     def build_dihedral_coeffs(self):
         dihedral_coeffs = []
 
-        for key, index in self.dihedral_type_to_index.items():
+        for key, index in self._topo.dihedral_type_to_index.items():
             match key:
                 case ("N", "CA", "C", "N"):  # psi
                     dihedral_coeffs.append((index, 1, 0.6, 1, 0.0))
@@ -709,9 +603,11 @@ class Topology:
     def build_dihedrals_list(self):
         dihedrals_list = []
 
-        for i, (dih_atom_ids, key) in enumerate(self.dihedral_to_type.items()):
-            dih_atom_inds = [self.atom_to_index[atom_id] for atom_id in dih_atom_ids]
-            dihedral_index = self.dihedral_type_to_index[key]
+        for i, (dih_atom_ids, key) in enumerate(self._topo.dihedral_to_type.items()):
+            dih_atom_inds = [
+                self._topo.atom_to_index[atom_id] for atom_id in dih_atom_ids
+            ]
+            dihedral_index = self._topo.dihedral_type_to_index[key]
             dihedrals_list.append(
                 (i + 1, dihedral_index) + tuple(i + 1 for i in dih_atom_inds)
             )
@@ -721,11 +617,14 @@ class Topology:
     def build_cmap_crossterms_list(self):
         cmap_crossterms = []
 
-        for i, (atom_ids, key) in enumerate(self.crossterm_to_type.items()):
-            atom_inds = [self._atom_to_index[atom_id] for atom_id in atom_ids]
-            crossterm_index = self.crossterm_type_to_index[key]
+        for i, (atom_ids, key) in enumerate(self._topo.crossterm_to_type.items()):
+            atom_inds = [self._topo.atom_to_index[atom_id] for atom_id in atom_ids]
+            crossterm_index = self._topo.crossterm_type_to_index[key]
             cmap_crossterms.append(
                 (i + 1, crossterm_index) + tuple(i + 1 for i in atom_inds)
             )
 
         return cmap_crossterms
+
+    def filter_cg_atoms(self, ag):
+        return filter_atoms(ag, self._topo.atom_to_type)
