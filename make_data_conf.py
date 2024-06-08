@@ -4,6 +4,7 @@ from ast import literal_eval
 
 import MDAnalysis as mda
 from MDAnalysis.topology.tables import masses as atom_masses_dict
+from MDAnalysis.core.groups import Atom
 from MDAnalysis.lib.util import convert_aa_code
 from more_itertools import pairwise, triplewise
 
@@ -131,10 +132,16 @@ def write_data_config(
     return topo
 
 
+def get_atom_id(atom: Atom):
+    return (atom.segid, int(atom.resid), atom.name)
+
+
+# TODO: find more specific name...
 class Topology:
     def __init__(self, topo_dicts):
         self._topo_dicts = topo_dicts
         self._atom_to_type = topo_dicts["atom_to_type"]
+        self._atom_to_index = topo_dicts["atom_to_index"]
         self._atom_type_to_index = topo_dicts["atom_type_to_index"]
         self._bond_to_type = topo_dicts["bond_to_type"]
         self._bond_type_to_index = topo_dicts["bond_type_to_index"]
@@ -177,6 +184,8 @@ class Topology:
             atom_type_to_index,
         ) = cls._build_atom_to_type_dict(u)
 
+        atom_to_index = {key: index for index, key in enumerate(atom_to_type)}
+
         (
             bond_to_type,
             bond_type_to_index,
@@ -199,6 +208,7 @@ class Topology:
 
         topo_dicts = dict(
             atom_to_type=atom_to_type,
+            atom_to_index=atom_to_index,
             atom_type_to_index=atom_type_to_index,
             bond_to_type=bond_to_type,
             bond_type_to_index=bond_type_to_index,
@@ -215,6 +225,10 @@ class Topology:
     @property
     def atom_to_type(self):
         return self._atom_to_type
+
+    @property
+    def atom_to_index(self):
+        return self._atom_to_index
 
     @property
     def atom_type_to_index(self):
@@ -322,7 +336,7 @@ class Topology:
                 index = len(atom_type_to_index) + 1  # start from 1
                 atom_type_to_index[key] = index
 
-            atom_to_type[int(atom.ix)] = key
+            atom_to_type[get_atom_id(atom)] = key
 
         unique_residues = set(u.residues.resnames)
         # residue-specific CA and CB,
@@ -344,7 +358,7 @@ class Topology:
             missing_atom = False
 
             for atom in bond:
-                if atom.ix not in atom_to_type:
+                if get_atom_id(atom) not in atom_to_type:
                     missing_atom = True
                     break
 
@@ -375,7 +389,8 @@ class Topology:
                 index = len(bond_type_to_index) + 1
                 bond_type_to_index[key] = index
 
-            bond_to_type[tuple(bond.indices.tolist())] = key
+            bond_inds = tuple(get_atom_id(atom) for atom in bond)
+            bond_to_type[bond_inds] = key
 
         # for each AA type we have specific N-CA, CA-CB (CA-H for glycine) and CA-C bonds
         # plus a generic C-N bond
@@ -408,7 +423,7 @@ class Topology:
             pair_types = []
 
             for pair in pairwise(angle):
-                bond_inds = tuple(int(atom.ix) for atom in pair)
+                bond_inds = tuple(get_atom_id(atom) for atom in pair)
 
                 match = next(
                     (
@@ -436,7 +451,8 @@ class Topology:
                 index = len(angle_type_to_index) + 1
                 angle_type_to_index[key] = index
 
-            angle_to_type[tuple(angle.indices.tolist())] = key
+            angle_inds = tuple(get_atom_id(atom) for atom in angle)
+            angle_to_type[angle_inds] = key
 
         assert len(angle_to_type) == 5 * len(u.residues) - 2
         # N-CA-CO, CA-CO-N, CO-N-CA, N-CA-CB, C-CA-CB
@@ -459,7 +475,7 @@ class Topology:
             missing_angle = False
 
             for triplet in triplewise(dihedral):
-                angle_inds = tuple(int(atom.ix) for atom in triplet)
+                angle_inds = tuple(get_atom_id(atom) for atom in triplet)
 
                 if angle_inds not in angle_to_type:
                     missing_angle = True
@@ -477,7 +493,8 @@ class Topology:
                 index = len(dihedral_type_to_index) + 1
                 dihedral_type_to_index[key] = index
 
-            dihedral_to_type[tuple(dihedral.indices.tolist())] = key
+            dih_inds = tuple(get_atom_id(atom) for atom in dihedral)
+            dihedral_to_type[dih_inds] = key
 
         assert len(dihedral_to_type) == 3 * (len(u.residues) - 1)
         # CO-N-CA-CO, CA-CO-N-CA, N-CA-CO-N
@@ -529,7 +546,8 @@ class Topology:
                 crossterm_type_to_index[key] = index
 
                 atoms = dihedral1[:] + dihedral2[-1]
-                crossterm_to_type[tuple(atoms.indices.tolist())] = key
+                crossterm_inds = tuple(get_atom_id(atom) for atom in atoms)
+                crossterm_to_type[crossterm_inds] = key
 
                 left_dihedrals.remove(dihedral2)
                 break
@@ -538,6 +556,12 @@ class Topology:
         assert len(crossterm_type_to_index) == len(u.residues) - 2
 
         return crossterm_to_type, crossterm_type_to_index
+
+    def filter_cg_atoms(self, ag):
+        return sum(
+            ag.select_atoms(f"atom " + " ".join(map(str, atom_id)))
+            for atom_id in self.atom_to_type
+        )
 
     def build_atom_type_masses(self):
         atom_type_masses = []
@@ -567,15 +591,21 @@ class Topology:
 
         return atom_type_masses
 
-    def build_atoms_list(self, init_ag):
+    def build_atoms_list(self, ag):
         atom_specs = []
 
-        # TODO: center u positions
+        cg_ag = self.filter_cg_atoms(ag)
 
-        for i, (atom_ind, key) in enumerate(self.atom_to_type.items()):
-            type_index = self.atom_type_to_index[key]
+        # we assume that the center of the box is always (0, 0, 0)
+        com = cg_ag.center_of_mass()
+        cg_ag.translate(-com)
 
-            match key:
+        atom_id_to_obj = {get_atom_id(atom): atom for atom in cg_ag}
+
+        for i, (atom_id, type_key) in enumerate(self.atom_to_type.items()):
+            type_index = self.atom_type_to_index[type_key]
+
+            match type_key:
                 case (_, "N", is_terminal):
                     charge = 1 if is_terminal else 0
                 case (None, "C", is_terminal):
@@ -587,7 +617,8 @@ class Topology:
                 case _:
                     raise Exception
 
-            atom = init_ag[atom_ind]
+            # atom = init_ag.select_atoms(f"atom " + " ".join(atom_id))[0]
+            atom = atom_id_to_obj[atom_id]
             atom_specs.append(
                 (i + 1, 1, type_index, charge, *atom.position.tolist(), 0, 0, 0)
             )
@@ -620,18 +651,22 @@ class Topology:
     def build_bonds_list(self):
         bonds = []
 
-        for i, (bond_atoms_inds, bond_key) in enumerate(self.bond_to_type.items()):
+        for i, (bond_atom_ids, bond_key) in enumerate(self.bond_to_type.items()):
+            bond_atom_inds = [self.atom_to_index[atom_id] for atom_id in bond_atom_ids]
             bond_index = self.bond_type_to_index[bond_key]
-            bonds.append((i + 1, bond_index) + tuple(i + 1 for i in bond_atoms_inds))
+            bonds.append((i + 1, bond_index) + tuple(i + 1 for i in bond_atom_inds))
 
         return bonds
 
     def build_angles_list(self):
         angles = []
 
-        for i, (angle_atoms_inds, key) in enumerate(self.angle_to_type.items()):
+        for i, (angle_atoms_ids, key) in enumerate(self.angle_to_type.items()):
+            angle_atom_inds = [
+                self.atom_to_index[atom_id] for atom_id in angle_atoms_ids
+            ]
             angle_index = self.angle_type_to_index[key]
-            angles.append((i + 1, angle_index) + tuple(i + 1 for i in angle_atoms_inds))
+            angles.append((i + 1, angle_index) + tuple(i + 1 for i in angle_atom_inds))
 
         return angles
 
@@ -674,10 +709,11 @@ class Topology:
     def build_dihedrals_list(self):
         dihedrals_list = []
 
-        for i, (dih_atoms_inds, key) in enumerate(self.dihedral_to_type.items()):
+        for i, (dih_atom_ids, key) in enumerate(self.dihedral_to_type.items()):
+            dih_atom_inds = [self.atom_to_index[atom_id] for atom_id in dih_atom_ids]
             dihedral_index = self.dihedral_type_to_index[key]
             dihedrals_list.append(
-                (i + 1, dihedral_index) + tuple(i + 1 for i in dih_atoms_inds)
+                (i + 1, dihedral_index) + tuple(i + 1 for i in dih_atom_inds)
             )
 
         return dihedrals_list
@@ -685,10 +721,11 @@ class Topology:
     def build_cmap_crossterms_list(self):
         cmap_crossterms = []
 
-        for i, (atoms_inds, key) in enumerate(self.crossterm_to_type.items()):
+        for i, (atom_ids, key) in enumerate(self.crossterm_to_type.items()):
+            atom_inds = [self._atom_to_index[atom_id] for atom_id in atom_ids]
             crossterm_index = self.crossterm_type_to_index[key]
             cmap_crossterms.append(
-                (i + 1, crossterm_index) + tuple(i + 1 for i in atoms_inds)
+                (i + 1, crossterm_index) + tuple(i + 1 for i in atom_inds)
             )
 
         return cmap_crossterms

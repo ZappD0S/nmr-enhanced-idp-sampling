@@ -454,7 +454,7 @@ def clean_pdb(input: io.TextIOBase, output: io.TextIOBase):
         output.write(match[0] + "\n")
 
 
-def main():
+def build_parser():
     parser = argparse.ArgumentParser(description="What the program does")
 
     parser.add_argument("--topo-pdb", type=str)
@@ -494,7 +494,7 @@ def main():
 
     phys_params_group = parser.add_argument_group("Physical parameters")
     phys_params_group.add_argument(
-        "-ld", "--langevin-damp", nargs="?", type=float, default=5
+        "-ld", "--langevin-damp", nargs="?", type=float, default=100.0
     )
     phys_params_group.add_argument(
         "-conc", "--concentration", nargs="?", type=float, default=0.15
@@ -505,6 +505,7 @@ def main():
     phys_params_group.add_argument("--scaling", nargs="?", type=float, default=0.66)
 
     sim_params_group = parser.add_argument_group("Simulation parameters")
+    sim_params_group.add_argument("--dry-run", action="store_true")
     sim_params_group.add_argument(
         "--sim-time", nargs="?", type=float, default=500.0, help="in nanoseconds"
     )
@@ -519,6 +520,11 @@ def main():
         help="in nanometers (check..)",
     )
 
+    return parser
+
+
+def main():
+    parser = build_parser()
     args = parser.parse_args()
 
     if args.use_cmap and not (args.target_dist and args.ens_traj):
