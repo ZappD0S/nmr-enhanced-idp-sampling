@@ -1,3 +1,4 @@
+from itertools import pairwise
 from data_utils import (
     filter_atoms,
     get_atom_id,
@@ -53,16 +54,21 @@ class CharmmDataBuilder(BaseDataBuilder):
     def n_dihedral_types(self):
         return len(self._dih_coeffs)
 
+    @property
+    def crossterm_type_to_resids(self):
+        return self._crossterm_type_to_resids
+
     # @property
     # def atom_types(self):
     #     return self._atom_type_to_index.keys()
 
     def __init__(
-        self, lark_grammar: Path, chm2lmp_data: Path, all_ag: mda.AtomGroup
+        self, chm2lmp_data: Path, all_ag: mda.AtomGroup
     ) -> None:
         super().__init__()
 
-        parser = Lark.open(lark_grammar, parser="lalr")
+        # TODO: the .lark file needs to be in the same folder..
+        parser = Lark.open("data_parser/data_grammar.lark", parser="lalr")
         self._ref_all_ag = all_ag
         self._ref_cg_ag = self._build_cg_ag(all_ag)
 
@@ -107,6 +113,12 @@ class CharmmDataBuilder(BaseDataBuilder):
 
         imp_coeffs, imp_list = self._coeffs_inters_lists(imp_coeffs_tree, imps_tree)
         assert len(imp_coeffs) == 0 and len(imp_list) == 0
+
+        (
+            self._crossterm_to_type,
+            self._crossterm_type_to_ind,
+            self._crossterm_type_to_resids,
+        ) = self._build_cmap_to_type_dict()
 
     def _build_cg_ag(self, all_ag):
         cg_atoms = []
@@ -245,6 +257,7 @@ class CharmmDataBuilder(BaseDataBuilder):
             pair_coeffs, atom_name, is_term, _ = key
             new_key = (tuple(sorted(resnames)), atom_name, is_term)
             assert new_key not in atom_type_to_coeffs
+            # TODO: we need to use rmin in place of sigma
             atom_type_to_coeffs[new_key] = pair_coeffs
 
             assert new_key not in atom_type_to_ids
@@ -263,6 +276,7 @@ class CharmmDataBuilder(BaseDataBuilder):
             sigma = r0_dict[one_letter_resname]
             epsilon = epsilon_dict[one_letter_resname]
             # TODO: check order and units...
+            # TODO: we need to use rmin in place of sigma
             pair_coeffs = (epsilon, sigma) * 2
             atom_type_to_coeffs[key] = pair_coeffs
 
@@ -368,19 +382,49 @@ class CharmmDataBuilder(BaseDataBuilder):
     def build_dihedrals_list(self):
         return self._dih_list
 
-    def build_cmap_crossterms_list(self):
+    def _build_cmap_to_type_dict(self):
         dihedrals = []
         for row in self._dih_list:
             _, _, *dih_inds = row
+            assert len(dih_inds) == 4
             dih_atoms = self._ref_cg_ag[dih_inds]
             dihedrals.append(dih_atoms)
 
-        cmap_atoms_list = build_cmap_atoms(dihedrals)
+        crossterm_atoms_list = build_cmap_atoms(dihedrals)
 
-        for cmap_atoms in cmap_atoms_list:
+        crossterm_to_type = {}
+        crossterm_type_to_ind = {}
+        crossterm_type_to_resids = {}
 
-            atom_inds = [self._cg_atom_to_ind[get_atom_id(atom)] for atom in cmap_atoms]
+        for crossterm_atoms in crossterm_atoms_list:
+            assert all(
+                atom1.residue == atom2.residue
+                for atom1, atom2 in pairwise(crossterm_atoms[1:-1])
+            )
 
-        # TODO: we need a dict that maps cmap type to resids list (or set..)
+            # each residue of the chain has its own cmap crossterm
+            key = int(crossterm_atoms[1].resid)
+            crossterm_atom_ids = tuple(get_atom_id(atom) for atom in crossterm_atoms)
 
-        raise NotImplementedError
+            crossterm_to_type[crossterm_atom_ids] = key
+
+            if key not in crossterm_type_to_ind:
+                crossterm_type_to_ind[key] = len(crossterm_type_to_ind) + 1
+
+            crossterm_type_to_resids.setdefault(key, []).append(
+                crossterm_atoms[1].resid
+            )
+
+        return crossterm_to_type, crossterm_type_to_ind, crossterm_type_to_resids
+
+    def build_cmap_crossterms_list(self):
+        cmap_crossterms_list = []
+
+        for i, (crossterm_ids, key) in enumerate(self._crossterm_to_type.items()):
+            crossterm_type_ind = self._crossterm_type_to_ind[key]
+
+            atom_inds = [self._cg_atom_to_ind[atom_id] + 1 for atom_id in crossterm_ids]
+
+            cmap_crossterms_list.append((i + 1, crossterm_type_ind, *atom_inds))
+
+        return cmap_crossterms_list
