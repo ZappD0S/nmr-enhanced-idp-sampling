@@ -69,14 +69,14 @@ class CharmmDataBuilder(BaseDataBuilder):
 
         # TODO: the .lark file needs to be in the same folder..
         parser = Lark.open("data_parser/data_grammar.lark", parser="lalr")
-        self._ref_all_ag = all_ag
-        self._ref_cg_ag = self._build_cg_ag(all_ag)
+        self._all_ag = all_ag
+        self._cg_ag = self._build_cg_ag(all_ag)
 
         self._all_ind_to_atom = {
-            atom.ix: get_atom_id(atom) for atom in self._ref_all_ag
+            atom.ix: get_atom_id(atom) for atom in self._all_ag
         }
         self._cg_atom_to_ind = {
-            get_atom_id(atom): i for i, atom in enumerate(self._ref_cg_ag)
+            get_atom_id(atom): i for i, atom in enumerate(self._cg_ag)
         }
 
         data_tree = parser.parse(chm2lmp_data.read_text())
@@ -217,13 +217,13 @@ class CharmmDataBuilder(BaseDataBuilder):
 
         atom_to_coeffs = {}
 
-        for atom, row in zip(self._ref_all_ag, atoms_list_tree.children, strict=True):
+        for atom, row in zip(self._all_ag, atoms_list_tree.children, strict=True):
             tokens = row.children
             all_atom_type = int(tokens[2].value)
             pair_coeffs = tuple(pair_coeffs_dict[all_atom_type])
             atom_to_coeffs[get_atom_id(atom)] = pair_coeffs
 
-        for atom in self._ref_cg_ag:
+        for atom in self._cg_ag:
             if atom.name in {"CA", "C", "N"}:
                 bb_atoms.append(atom)
             else:
@@ -275,7 +275,6 @@ class CharmmDataBuilder(BaseDataBuilder):
             one_letter_resname = convert_aa_code(atom.resname)
             sigma = r0_dict[one_letter_resname]
             epsilon = epsilon_dict[one_letter_resname]
-            # TODO: check order and units...
             # TODO: we need to use rmin in place of sigma
             pair_coeffs = (epsilon, sigma) * 2
             atom_type_to_coeffs[key] = pair_coeffs
@@ -316,7 +315,7 @@ class CharmmDataBuilder(BaseDataBuilder):
         return atom_type_masses
 
     def filter_cg_atoms(self, ag):
-        return filter_atoms(ag, (get_atom_id(atom) for atom in self._ref_cg_ag))
+        return filter_atoms(ag, (get_atom_id(atom) for atom in self._cg_ag))
 
     def build_atoms_list(self, ag):
         # what about the charges?
@@ -387,7 +386,7 @@ class CharmmDataBuilder(BaseDataBuilder):
         for row in self._dih_list:
             _, _, *dih_inds = row
             assert len(dih_inds) == 4
-            dih_atoms = self._ref_cg_ag[dih_inds]
+            dih_atoms = self._cg_ag[dih_inds]
             dihedrals.append(dih_atoms)
 
         crossterm_atoms_list = build_cmap_atoms(dihedrals)
