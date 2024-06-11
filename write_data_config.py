@@ -28,7 +28,7 @@ def write_data_config(
         f"{data_build.n_bonds} bonds\n"
         f"{data_build.n_angles} angles\n"
         f"{data_build.n_dihedrals} dihedrals\n"
-        f"0 impropers\n"
+        f"{data_build.n_impropers} impropers\n"
     )
 
     if use_cmap:
@@ -40,6 +40,7 @@ def write_data_config(
         f"{data_build.n_bond_types} bond types\n"
         f"{data_build.n_angle_types} angle types\n"
         f"{data_build.n_dihedral_types} dihedral types\n"
+        f"{data_build.n_improper_types} improper types\n"
         f"\n"
         f"{-box_half_width} {box_half_width} xlo xhi\n"
         f"{-box_half_width} {box_half_width} ylo yhi\n"
@@ -48,14 +49,17 @@ def write_data_config(
     )
 
     write_list(stream, "Masses", data_build.build_atom_type_masses())
-    write_list(stream, "Pair Coeffs", data_build.build_pair_coeffs())
+    # write_list(stream, "Pair Coeffs", data_build.build_pair_coeffs())
+    write_list(stream, "PairIJ Coeffs", data_build.build_mixed_pair_coeffs())
     write_list(stream, "Bond Coeffs", data_build.build_bond_coeffs())
     write_list(stream, "Angle Coeffs", data_build.build_angle_coeffs())
     write_list(stream, "Dihedral Coeffs", data_build.build_dihedral_coeffs())
+    write_list(stream, "Improper Coeffs", data_build.build_improper_coeffs())
     write_list(stream, "Atoms", data_build.build_atoms_list(init_ag))
     write_list(stream, "Bonds", data_build.build_bonds_list())
     write_list(stream, "Angles", data_build.build_angles_list())
     write_list(stream, "Dihedrals", data_build.build_dihedrals_list())
+    write_list(stream, "Impropers", data_build.build_impropers_list())
 
     if use_cmap:
         write_list(stream, "CMAP", data_build.build_cmap_crossterms_list())

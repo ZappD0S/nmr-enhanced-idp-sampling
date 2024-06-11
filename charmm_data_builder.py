@@ -15,6 +15,7 @@ import MDAnalysis as mda
 from lark import Lark
 from MDAnalysis.topology.tables import masses as atom_masses_dict
 from MDAnalysis.lib.util import convert_aa_code
+from itertools import combinations, combinations_with_replacement
 
 
 class CharmmDataBuilder(BaseDataBuilder):
@@ -33,6 +34,10 @@ class CharmmDataBuilder(BaseDataBuilder):
     @property
     def n_dihedrals(self):
         return len(self._dih_list)
+
+    @property
+    def n_impropers(self):
+        return len(self._imp_list)
 
     @property
     def n_crossterms(self):
@@ -55,16 +60,14 @@ class CharmmDataBuilder(BaseDataBuilder):
         return len(self._dih_coeffs)
 
     @property
+    def n_improper_types(self):
+        return len(self._imp_coeffs)
+
+    @property
     def crossterm_type_to_resids(self):
         return self._crossterm_type_to_resids
 
-    # @property
-    # def atom_types(self):
-    #     return self._atom_type_to_index.keys()
-
-    def __init__(
-        self, chm2lmp_data: Path, all_ag: mda.AtomGroup
-    ) -> None:
+    def __init__(self, chm2lmp_data: Path, all_ag: mda.AtomGroup) -> None:
         super().__init__()
 
         # TODO: the .lark file needs to be in the same folder..
@@ -72,9 +75,7 @@ class CharmmDataBuilder(BaseDataBuilder):
         self._all_ag = all_ag
         self._cg_ag = self._build_cg_ag(all_ag)
 
-        self._all_ind_to_atom = {
-            atom.ix: get_atom_id(atom) for atom in self._all_ag
-        }
+        self._all_ind_to_atom = {atom.ix: get_atom_id(atom) for atom in self._all_ag}
         self._cg_atom_to_ind = {
             get_atom_id(atom): i for i, atom in enumerate(self._cg_ag)
         }
@@ -111,8 +112,12 @@ class CharmmDataBuilder(BaseDataBuilder):
         imp_coeffs_tree = next(data_tree.find_data("improper_coeffs"))
         imps_tree = next(data_tree.find_data("impropers_list"))
 
-        imp_coeffs, imp_list = self._coeffs_inters_lists(imp_coeffs_tree, imps_tree)
-        assert len(imp_coeffs) == 0 and len(imp_list) == 0
+        self._imp_coeffs, self._imp_list = self._coeffs_inters_lists(
+            imp_coeffs_tree, imps_tree
+        )
+        # print(imp_coeffs)
+        # print(len(imp_list))
+        # assert len(imp_coeffs) == 0 and len(imp_list) == 0
 
         (
             self._crossterm_to_type,
@@ -124,7 +129,7 @@ class CharmmDataBuilder(BaseDataBuilder):
         cg_atoms = []
 
         for atom in all_ag:
-            if atom.name in {"CA", "CB", "C", "N"} or (
+            if atom.name in {"CA", "CB", "C", "N", "O"} or (
                 atom.resname == "GLY" and atom.name == "2HA"
             ):
                 cg_atoms.append(atom)
@@ -198,13 +203,45 @@ class CharmmDataBuilder(BaseDataBuilder):
         return cg_coeffs_list, cg_inters_list
 
     def build_pair_coeffs(self):
-        pair_coeffs = []
+        raise NotImplementedError
+        # pair_coeffs = []
 
-        for atom_type, coeffs in self._atom_type_to_coeffs.items():
-            index = self._atom_type_to_index[atom_type]
-            pair_coeffs.append((index, *coeffs))
+        # for atom_type, coeffs in self._atom_type_to_coeffs.items():
+        #     index = self._atom_type_to_index[atom_type]
+        #     pair_coeffs.append((index, *coeffs))
 
-        return pair_coeffs
+        # return pair_coeffs
+
+    def build_mixed_pair_coeffs(self):
+        mixed_pair_coeffs = []
+
+        for (key_i, i), (key_j, j) in combinations_with_replacement(
+            self._atom_type_to_index.items(), 2
+        ):
+            eps_i, sigma_i = self._atom_type_to_coeffs[key_i]
+            eps_j, sigma_j = self._atom_type_to_coeffs[key_j]
+
+            pair_inds = (i, j) if i < j else (j, i)
+            eps_ij = (eps_i * eps_j) ** 0.5
+
+            _, atom_name_i, _ = key_i
+            _, atom_name_j, _ = key_j
+
+            if atom_name_i in {"CB", "2HA"} and atom_name_j in {"CB", "2HA"}:
+                # sidechain-sidechain interaction
+                sigma_ij = (sigma_i * sigma_j) ** 0.5
+                r_min = sigma_ij * 2 ** (1 / 6)
+                nm_exps = (8, 6)
+            else:
+                sigma_ij = 0.5 * (sigma_i + sigma_j)
+                nm_exps = (12, 6)
+
+            r_min = sigma_ij * 2 ** (1 / 6)
+            mixed_pair_coeffs.append(
+                (len(mixed_pair_coeffs) + 1,) + pair_inds + (eps_ij, r_min) + nm_exps
+            )
+
+        return mixed_pair_coeffs
 
     def _build_atom_to_type_dict(self, tree):
         pair_coeffs_tree = next(tree.find_data("pair_coeffs"))
@@ -220,11 +257,13 @@ class CharmmDataBuilder(BaseDataBuilder):
         for atom, row in zip(self._all_ag, atoms_list_tree.children, strict=True):
             tokens = row.children
             all_atom_type = int(tokens[2].value)
-            pair_coeffs = tuple(pair_coeffs_dict[all_atom_type])
-            atom_to_coeffs[get_atom_id(atom)] = pair_coeffs
+
+            # take only the first two, which are epsilon and sigma
+            pair_coeffs = pair_coeffs_dict[all_atom_type][:2]
+            atom_to_coeffs[get_atom_id(atom)] = tuple(pair_coeffs)
 
         for atom in self._cg_ag:
-            if atom.name in {"CA", "C", "N"}:
+            if atom.name in {"CA", "C", "N", "O"}:
                 bb_atoms.append(atom)
             else:
                 other_atoms.append(atom)
@@ -250,6 +289,7 @@ class CharmmDataBuilder(BaseDataBuilder):
             atom_type_to_resnames.setdefault(key, set()).add(atom.resname)
 
         assert n_terms == 2
+
         # swap coeffs with resnames set
         atom_type_to_coeffs = {}
 
@@ -257,7 +297,6 @@ class CharmmDataBuilder(BaseDataBuilder):
             pair_coeffs, atom_name, is_term, _ = key
             new_key = (tuple(sorted(resnames)), atom_name, is_term)
             assert new_key not in atom_type_to_coeffs
-            # TODO: we need to use rmin in place of sigma
             atom_type_to_coeffs[new_key] = pair_coeffs
 
             assert new_key not in atom_type_to_ids
@@ -275,8 +314,7 @@ class CharmmDataBuilder(BaseDataBuilder):
             one_letter_resname = convert_aa_code(atom.resname)
             sigma = r0_dict[one_letter_resname]
             epsilon = epsilon_dict[one_letter_resname]
-            # TODO: we need to use rmin in place of sigma
-            pair_coeffs = (epsilon, sigma) * 2
+            pair_coeffs = (epsilon, sigma)
             atom_type_to_coeffs[key] = pair_coeffs
 
         atom_to_type = {
@@ -298,7 +336,9 @@ class CharmmDataBuilder(BaseDataBuilder):
         for atom_type, index in self._atom_type_to_index.items():
             match atom_type:
                 case _, "C", is_term:
-                    mass = amd["C"] + (2 * amd["O"] if is_term else amd["O"])
+                    mass = amd["C"] + (2 * amd["O"] if is_term else 0)
+                case _, "O", False:
+                    mass = amd["O"]
                 case ["PRO"], "N", False:
                     mass = amd["N"]
                 case _, "N", is_term:
@@ -338,6 +378,8 @@ class CharmmDataBuilder(BaseDataBuilder):
                     charge = 1 if is_term else 0
                 case (_, "C", is_term):
                     charge = -1 if is_term else 0
+                case (_, "O", False):
+                    charge = 0
                 case (_, "CA", False):
                     charge = 0
                 case ([resname], "CB" | "2HA", False):
@@ -372,21 +414,30 @@ class CharmmDataBuilder(BaseDataBuilder):
     def build_angle_coeffs(self):
         return self._angle_coeffs
 
+    def build_improper_coeffs(self):
+        return self._imp_coeffs
+
     def build_angles_list(self):
-        return self._angles_list
+        # remove last two columns and use style harmonic
+        return self._angles_listFF
 
     def build_dihedral_coeffs(self):
+        # TODO: remove last column, add initial columns of ones (# of terms) and use style harmonic
         return self._dih_coeffs
 
     def build_dihedrals_list(self):
         return self._dih_list
+
+    def build_impropers_list(self):
+        return self._imp_list
 
     def _build_cmap_to_type_dict(self):
         dihedrals = []
         for row in self._dih_list:
             _, _, *dih_inds = row
             assert len(dih_inds) == 4
-            dih_atoms = self._cg_ag[dih_inds]
+            # BUG: dih_inds start from one!
+            dih_atoms = self._cg_ag[[ind - 1 for ind in dih_inds]]
             dihedrals.append(dih_atoms)
 
         crossterm_atoms_list = build_cmap_atoms(dihedrals)
