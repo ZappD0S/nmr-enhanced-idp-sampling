@@ -47,6 +47,8 @@ def write_input_config(
     cmap_name = "mycmap"
     Nsteps = floor(args.sim_time * 1e6 / args.time_step)
 
+    inv_kappa = np.sqrt(args.conc) / 3.04
+
     stream.write(
         f"# comment\n"  #
         f"\n"
@@ -55,15 +57,15 @@ def write_input_config(
         f"atom_style full\n"
         f"bond_style harmonic\n"
         f"angle_style charmm\n"
-        f"dihedral_style charmm\n"
+        f"dihedral_style fourier\n"
         f"improper_style harmonic\n"
         f"special_bonds charmm\n"
         f"\n"
-        f"pair_style nm/cut/coul/long 12.0 15.0\n"
+        f"pair_style hybrid/overlay mie/cut 8.0 coul/debye {inv_kappa} 10.0\n"
         # f"pair_style lj/charmm/coul/long 8.0 10.0\n"
         # f"pair_modify mix arithmetic\n"
         # f"suffix off\n"
-        f"kspace_style pppm 1e-4\n"
+        # f"kspace_style pppm 1e-4\n"
         # f"suffix on\n"
     )
 
@@ -97,6 +99,7 @@ def write_input_config(
     stream.write("\n")
 
     stream.write(
+        f"pair_coeff * * coul/debye\n"
         f"neighbor 2.0 bin\n"
         f"neigh_modify delay 5 every 1\n"
         f"\n"
@@ -311,7 +314,7 @@ def build_parser():
         "-ld", "--langevin-damp", nargs="?", type=float, default=100.0
     )
     phys_params_group.add_argument(
-        "-conc", "--concentration", nargs="?", type=float, default=0.15
+        "--conc", nargs="?", type=float, default=0.15
     )
     # phys_params_group.add_argument("--CO-charges", nargs="?", type=float, default=30.0)
     phys_params_group.add_argument("--dielectric", nargs="?", type=float, default=78.5)
@@ -350,6 +353,7 @@ def run_sim(cwd, args):
             "in.CG",
         ],
         stdout=subprocess.DEVNULL,
+        check=True,
         cwd=cwd,
     )
 
@@ -370,10 +374,10 @@ def main():
     init_ag_map = {}
 
     for init_conform in args.init_confs:
-        with init_conform.open() as raw_pdb, tempfile.TemporaryFile("w+") as cleaned_pdb:
+        with init_conform.open() as raw_pdb, tempfile.NamedTemporaryFile("w+") as cleaned_pdb:
             clean_pdb(raw_pdb, cleaned_pdb)
             cleaned_pdb.seek(0)
-            u_init = mda.Universe(cleaned_pdb, format="PDB")
+            u_init = mda.Universe(cleaned_pdb.name, format="PDB")
 
         init_ag = data_builder.filter_cg_atoms(u_init.atoms)
         init_conform_name = init_conform.stem

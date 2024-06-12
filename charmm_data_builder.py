@@ -1,4 +1,5 @@
 from itertools import pairwise
+from math import sqrt
 from data_utils import (
     filter_atoms,
     get_atom_id,
@@ -229,17 +230,22 @@ class CharmmDataBuilder(BaseDataBuilder):
 
             if atom_name_i in {"CB", "2HA"} and atom_name_j in {"CB", "2HA"}:
                 # sidechain-sidechain interaction
+                sigma_i /= 2 / sqrt(3)
+                sigma_j /= 2 / sqrt(3)
+
                 sigma_ij = (sigma_i * sigma_j) ** 0.5
-                r_min = sigma_ij * 2 ** (1 / 6)
                 nm_exps = (8, 6)
             else:
+                if atom_name_i in {"CB", "2HA"}:
+                    sigma_i /= 2 ** (1 / 6)
+
+                if atom_name_j in {"CB", "2HA"}:
+                    sigma_j /= 2 ** (1 / 6)
+
                 sigma_ij = 0.5 * (sigma_i + sigma_j)
                 nm_exps = (12, 6)
 
-            r_min = sigma_ij * 2 ** (1 / 6)
-            mixed_pair_coeffs.append(
-                (len(mixed_pair_coeffs) + 1,) + pair_inds + (eps_ij, r_min) + nm_exps
-            )
+            mixed_pair_coeffs.append(pair_inds + ("mie/cut", eps_ij, sigma_ij) + nm_exps)
 
         return mixed_pair_coeffs
 
@@ -419,11 +425,16 @@ class CharmmDataBuilder(BaseDataBuilder):
 
     def build_angles_list(self):
         # remove last two columns and use style harmonic
-        return self._angles_listFF
+        return self._angles_list
 
     def build_dihedral_coeffs(self):
-        # TODO: remove last column, add initial columns of ones (# of terms) and use style harmonic
-        return self._dih_coeffs
+        harmonic_dih_coeffs = []
+
+        for row in self._dih_coeffs:
+            index, *coeffs, _ = row
+            harmonic_dih_coeffs.append((index, 1, *coeffs))
+
+        return harmonic_dih_coeffs
 
     def build_dihedrals_list(self):
         return self._dih_list
