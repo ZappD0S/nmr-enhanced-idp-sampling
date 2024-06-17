@@ -11,6 +11,7 @@ import numpy as np
 import MDAnalysis as mda
 from scipy import constants
 import mdtraj as mdt
+from mdtraj.formats import PDBTrajectoryFile, XTCTrajectoryFile
 from scipy.stats import gaussian_kde
 from KDEpy import FFTKDE
 
@@ -41,9 +42,6 @@ def write_input_config(
     output_traj_fname: str,
     cmap_fname: str | None = None,
 ):
-    # TODO: where does this value come from?
-    # kappa = 3.04 / np.sqrt(args.concentration)
-    # box_name = "mybox"
     cmap_name = "mycmap"
     Nsteps = floor(args.sim_time * 1e6 / args.time_step)
 
@@ -107,11 +105,13 @@ def write_input_config(
         f"thermo_style multi\n"
         f"thermo 1000\n"
         f"\n"
-        f"minimize 1.0e-4 1.0e-6 10000 100000\n"
+        # f"minimize 1.0e-4 1.0e-6 10000 100000\n"
+        f"minimize 0.0 1.0e-8 1000 100000\n"
         f"fix 1 all nve\n"
+        # TODO: make the seed configurable
+        f"fix 3 all langevin {args.temp} {args.temp} $(100.0*dt) 12345\n"
+        # f"fix 3 all langevin {0.0} {args.temp} $(100.0*dt) 12345\n"
         # f"fix 2 all shake 0.0001 5 0 m 1.0 a 232\n"
-        # TODO: what is the random number? -> it's almost certainly the seed..
-        f"fix 3 all langevin {args.temp} {args.temp} {args.langevin_damp} {randint(1, 100000)}\n"
         f"\n"
         f"dump 1 all xtc 250 {output_traj_fname}\n"
         f"run {Nsteps}\n"
@@ -206,8 +206,8 @@ def build_cmaps(ens_ref_traj, data_builder: BaseDataBuilder, args: argparse.Name
 
     grid, angles = make_grid(args.cmap_points)
 
-    for key, resids in data_builder.crossterm_type_to_resids.items():
-        sel_ens_phipsi = ens_phipsi[resids].reshape(-1, 2)
+    for ind, resids in data_builder.crossterm_ind_to_resids:
+        sel_ens_phipsi = ens_phipsi[np.asarray(resids) - 1].reshape(-1, 2)
 
         scipy_kde = gaussian_kde(sel_ens_phipsi.T, bw_method="silverman")
         fft_kde = FFTKDE(bw=scipy_kde.silverman_factor())
@@ -215,7 +215,7 @@ def build_cmaps(ens_ref_traj, data_builder: BaseDataBuilder, args: argparse.Name
         sel_ens_dens = fft_kde.evaluate(grid.reshape(-1, 2)).reshape(grid.shape[:2])
         sel_ens_dens = sel_ens_dens[:-1, :-1]
 
-        sel_ref_phipsi = ref_phipsi[resids].reshape(-1, 2)
+        sel_ref_phipsi = ref_phipsi[np.asarray(resids) - 1].reshape(-1, 2)
 
         scipy_kde = gaussian_kde(sel_ref_phipsi.T, bw_method="silverman")
         fft_kde = FFTKDE(bw=scipy_kde.silverman_factor())
@@ -224,7 +224,6 @@ def build_cmaps(ens_ref_traj, data_builder: BaseDataBuilder, args: argparse.Name
         sel_ref_dens = sel_ref_dens[:-1, :-1]
 
         cmap = -R * args.temp * (np.log(sel_ens_dens) - np.log(sel_ref_dens))
-        ind = data_builder.crossterm_type_to_index[key]
         cmaps_dict[ind] = cmap
 
     return cmaps_dict, angles[:-1]
@@ -269,19 +268,29 @@ def clean_pdb(input: io.TextIOBase, output: io.TextIOBase):
     )
 
 
+def clean_pdb2(input):
+    return subprocess.run(
+        "cut -c -79 | pdb_tidy | pdb_element | pdb_chain -A",
+        shell=True,
+        input=input,
+        capture_output=True,
+    ).stdout
+
+
 def build_parser():
     parser = argparse.ArgumentParser(description="What the program does")
 
     parser.add_argument("--topo-pdb", type=str, required=True)
     parser.add_argument("--ref-data", type=pathlib.Path, required=True)
+    parser.add_argument("--aster-ens-confs", nargs="+", type=pathlib.Path)
+
+    parser.add_argument("--skip-ref", action="store_true")
+    parser.add_argument("--skip-cmap", action="store_true")
 
     cmap_group = parser.add_argument_group("CMAP")
-    # cmap_group.add_argument("--use-cmap", action="store_true")
-    # cmap_group.add_argument("--target-dist", type=argparse.FileType("r"))
     cmap_group.add_argument(
         "--ens-traj",
         type=str,
-        required=True,
         help="""this is not an actual trajectory.
         It's just the ASTEROIDS ensemble conformations put together in an XTC file""",
     )
@@ -297,29 +306,14 @@ def build_parser():
         "--n-tasks", nargs="?", type=int, default=6, help="number of parallel tasks"
     )
 
-    # ah_group = parser.add_argument_group("Ashbaugh-Hatch")
-    # ah_group.add_argument("--ah-min-dist", nargs="?", type=float, default=0.5)
-    # ah_group.add_argument("--ah-cutoff", nargs="?", type=float, default=30.0)
-    # ah_group.add_argument(
-    #     "--epsilon",
-    #     nargs="?",
-    #     type=float,
-    #     default=0.2,
-    #     help="energy scale of non-bonded interactions, in Kcal/mol.",
-    # )
-    # ah_group.add_argument("--ah-points", nargs="?", type=int, default=7501)
-
     phys_params_group = parser.add_argument_group("Physical parameters")
     phys_params_group.add_argument(
         "-ld", "--langevin-damp", nargs="?", type=float, default=100.0
     )
-    phys_params_group.add_argument(
-        "--conc", nargs="?", type=float, default=0.15
-    )
+    phys_params_group.add_argument("--conc", nargs="?", type=float, default=0.15)
     # phys_params_group.add_argument("--CO-charges", nargs="?", type=float, default=30.0)
     phys_params_group.add_argument("--dielectric", nargs="?", type=float, default=78.5)
     phys_params_group.add_argument("-T", "--temp", nargs="?", type=float, default=300.0)
-    # phys_params_group.add_argument("--scaling", nargs="?", type=float, default=0.66)
 
     sim_params_group = parser.add_argument_group("Simulation parameters")
     sim_params_group.add_argument("--dry-run", action="store_true")
@@ -358,6 +352,71 @@ def run_sim(cwd, args):
     )
 
 
+def write_ens_xtc(path, cg_atom_ids, ens_pdb_files):
+    xyz_list = []
+
+    for pdb_file in ens_pdb_files:
+        with (
+            pdb_file.open() as raw_pdb,
+            tempfile.NamedTemporaryFile("w+") as cleaned_pdb,
+        ):
+            clean_pdb(raw_pdb, cleaned_pdb)
+            cleaned_pdb.seek(0)
+            pdb_traj = PDBTrajectoryFile(cleaned_pdb.name)
+
+        topo = pdb_traj.topology
+        cg_atoms_set = {(resid, name) for resid, name in cg_atom_ids}
+
+        inds = [
+            atom.index
+            for atom in topo.atoms
+            if (atom.residue.index + 1, atom.name) in cg_atoms_set
+        ]
+
+        xyz_list.append(pdb_traj.positions[0, inds])
+
+    xyz = np.stack(xyz_list, axis=0)
+    # xyz = np.asarray(np.around(xyz, 3), dtype=np.float32)
+    xyz = np.asarray(xyz, dtype=np.float32)
+
+    xtc_traj = XTCTrajectoryFile(str(path), "w")
+    xtc_traj.write(xyz)
+    xtc_traj.close()
+
+
+def run_ref_sim(init_ag_map, data_builder, args):
+    for init_conform_name, init_ag in init_ag_map.items():
+        conform_subdir = args.output_dir / init_conform_name
+        conform_subdir.mkdir(exist_ok=True)
+
+        ref_subdir = conform_subdir / "ref"
+        ref_subdir.mkdir(exist_ok=True)
+
+        write_configs(ref_subdir, init_ag, data_builder, args, None)
+        run_sim(ref_subdir, args)
+
+
+def run_cmap_sim(init_ag_map, data_builder, args, ens_traj_file, cg_pdb_file):
+    for init_conform_name, init_ag in init_ag_map.items():
+        conform_subdir = args.output_dir / init_conform_name
+        assert conform_subdir.exists()
+
+        ref_subdir = conform_subdir / "ref"
+        assert ref_subdir.exists()
+
+        cmap_subdir = conform_subdir / "cmap"
+        cmap_subdir.mkdir(exist_ok=True)
+
+        # ref_traj_file = ref_subdir / "traj.xtc"
+        ref_traj_file = ref_subdir / "traj.dcd"
+        assert ref_traj_file.exists()
+        ref_traj = mdt.load(ref_traj_file, top=cg_pdb_file)
+        ens_traj = mdt.load(ens_traj_file, top=cg_pdb_file)
+
+        write_configs(cmap_subdir, init_ag, data_builder, args, (ens_traj, ref_traj))
+        run_sim(cmap_subdir, args)
+
+
 def main():
     parser = build_parser()
     args = parser.parse_args()
@@ -369,12 +428,16 @@ def main():
     data_builder = CharmmDataBuilder(pathlib.Path(args.ref_data), u_ref.atoms)
 
     cg_atoms = data_builder.filter_cg_atoms(u_ref.atoms)
-    cg_atoms.write(args.output_dir / "cg.pdb")
+    cg_pdb_file = args.output_dir / "cg.pdb"
+    cg_atoms.write(cg_pdb_file)
 
     init_ag_map = {}
 
     for init_conform in args.init_confs:
-        with init_conform.open() as raw_pdb, tempfile.NamedTemporaryFile("w+") as cleaned_pdb:
+        with (
+            init_conform.open() as raw_pdb,
+            tempfile.NamedTemporaryFile("w+") as cleaned_pdb,
+        ):
             clean_pdb(raw_pdb, cleaned_pdb)
             cleaned_pdb.seek(0)
             u_init = mda.Universe(cleaned_pdb.name, format="PDB")
@@ -383,40 +446,20 @@ def main():
         init_conform_name = init_conform.stem
         init_ag_map[init_conform_name] = init_ag
 
-    ref_trajs_map = {}
-
-    # run ref
-    for init_conform_name, init_ag in init_ag_map.items():
-        conform_subdir = args.output_dir / init_conform_name
-        conform_subdir.mkdir(exist_ok=True)
-
-        ref_subdir = conform_subdir / "ref"
-        ref_subdir.mkdir(exist_ok=True)
-
-        write_configs(ref_subdir, init_ag, data_builder, args, None)
-        run_sim(ref_subdir, args)
-
-        ref_trajs_map[init_conform_name] = ref_subdir / "traj.xtc"
+    if not args.skip_ref:
+        run_ref_sim(init_ag_map, data_builder, args)
 
     # TODO: option to combine all ref traj.xtc files into one?
 
-    # run cmap
-    for init_conform_name, init_ag in init_ag_map.items():
-        conform_subdir = args.output_dir / init_conform_name
-        assert conform_subdir.exists()
+    if not args.skip_cmap:
+        ens_traj_file = args.output_dir / "ensemble.xtc"
 
-        ref_subdir = conform_subdir / "ref"
-        assert conform_subdir.exists()
+        if args.aster_ens_confs is not None:
+            write_ens_xtc(ens_traj_file, data_builder.cg_atom_ids, args.aster_ens_confs)
+        else:
+            assert ens_traj_file.exists()
 
-        cmap_subdir = conform_subdir / "cmap"
-        cmap_subdir.mkdir(exist_ok=True)
-
-        ref_traj_file = ref_trajs_map[init_conform_name]
-        ref_traj = mdt.load(ref_traj_file, top=...)
-        ens_traj = mdt.load(args.ens_traj, top=...)
-
-        write_configs(cmap_subdir, init_ag, data_builder, args, (ens_traj, ref_traj))
-        run_sim(cmap_subdir, args)
+        run_cmap_sim(init_ag_map, data_builder, args, ens_traj_file, cg_pdb_file)
 
 
 if __name__ == "__main__":
