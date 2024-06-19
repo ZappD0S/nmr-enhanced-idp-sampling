@@ -1,3 +1,4 @@
+from collections import defaultdict
 from itertools import pairwise
 from math import sqrt
 
@@ -88,7 +89,9 @@ class CharmmDataBuilder(BaseDataBuilder):
         cg_mask = self._build_cg_mask(all_ag)
         all_atom_ids = [get_atom_id(atom) for atom in all_ag]
         self._cg_atom_ids = [
-            atom_id for atom_id, is_cg in zip(all_atom_ids, cg_mask) if is_cg
+            atom_id
+            for atom_id, is_cg in zip(all_atom_ids, cg_mask, strict=True)
+            if is_cg
         ]
 
         assert all(atom.ix == i for i, atom in enumerate(self._all_ag))
@@ -104,6 +107,7 @@ class CharmmDataBuilder(BaseDataBuilder):
             self._atom_to_type,
             self._atom_type_to_index,
             self._atom_type_to_coeffs,
+            self._atom_charges_dict,
         ) = self._build_atom_to_type_dict(data_tree)
 
         bond_coeffs_tree = next(data_tree.find_data("bond_coeffs"))
@@ -140,11 +144,17 @@ class CharmmDataBuilder(BaseDataBuilder):
             self._crossterm_type_to_resids,
         ) = self._build_cmap_to_type_dict()
 
+    @staticmethod
+    def _is_cg_atom(atom):
+        return (atom.name in {"CA", "CB", "C", "N", "O", "HA", "HN"}) or (
+            (atom.resname == "GLY") and (atom.name in {"HA1", "HA2"})
+        )
+
     def _build_cg_ag(self, all_ag):
         cg_atoms = []
 
         for atom in all_ag:
-            if atom.name in {"CA", "CB", "C", "N", "O"}:
+            if self._is_cg_atom(atom):
                 cg_atoms.append(atom)
 
         return mda.AtomGroup(cg_atoms)
@@ -153,7 +163,7 @@ class CharmmDataBuilder(BaseDataBuilder):
         mask = []
 
         for atom in all_ag:
-            is_cg = atom.name in {"CA", "CB", "C", "N", "O"}
+            is_cg = self._is_cg_atom(atom)
             mask.append(is_cg)
 
         return np.array(mask, dtype=bool)
@@ -279,28 +289,38 @@ class CharmmDataBuilder(BaseDataBuilder):
         atoms_list_tree = next(tree.find_data("atoms_list"))
 
         pair_coeffs_dict = self._build_coeffs_dict(pair_coeffs_tree)
+        atom_specs_dict = self._build_coeffs_dict(atoms_list_tree)
 
         bb_atoms = []
-        other_atoms = []
+        cb_atoms = []
 
         atom_to_coeffs = {}
+        atom_charges_dict = defaultdict(float)
 
-        for atom, row in zip(self._all_ag, atoms_list_tree.children, strict=True):
-            tokens = row.children
-            all_atom_type = int(tokens[2].value)
+        for atom, row in zip(self._all_ag, atom_specs_dict.values(), strict=True):
+            resid, all_atom_type, charge, *_ = row
+
+            is_bb = self._is_cg_atom(atom) and not atom.name == "CB"
+            name = atom.name if is_bb else "CB"
+            atom_charges_dict[(resid, name)] += charge
 
             # take only the first two, which are epsilon and sigma
             pair_coeffs = pair_coeffs_dict[all_atom_type][:2]
             atom_to_coeffs[get_atom_id(atom)] = tuple(pair_coeffs)
 
+        eps = np.finfo(float).eps
+        for key, charge in charges_dict.items():
+            if np.abs(charge) < eps:
+                charges_dict[key] = 0.0
+
         for atom in self._cg_ag:
-            if atom.name in {"CA", "C", "N", "O"}:
-                bb_atoms.append(atom)
+            if atom.name == "CB":
+                cb_atoms.append(atom)
             else:
-                other_atoms.append(atom)
+                bb_atoms.append(atom)
 
         bb_atoms = mda.AtomGroup(bb_atoms)
-        other_atoms = mda.AtomGroup(other_atoms)
+        cb_atoms = mda.AtomGroup(cb_atoms)
 
         atom_type_to_ids = {}
         atom_type_to_resnames = {}
@@ -312,10 +332,8 @@ class CharmmDataBuilder(BaseDataBuilder):
             is_term = is_terminus(atom)
             if is_term:
                 n_terms += 1
-            # this is just to have a separate entry for proline's backbone nitrogen
-            is_n_pro = atom.name == "N" and atom.resname == "PRO"
-            is_ca_gly = atom.name == "CA" and atom.resname == "GLY"
-            key = (pair_coeffs, atom.name, is_term, is_n_pro, is_ca_gly)
+
+            key = (pair_coeffs, atom.name, is_term)
 
             atom_type_to_ids.setdefault(key, []).append(get_atom_id(atom))
             atom_type_to_resnames.setdefault(key, set()).add(atom.resname)
@@ -326,7 +344,7 @@ class CharmmDataBuilder(BaseDataBuilder):
         atom_type_to_coeffs = {}
 
         for key, resnames in atom_type_to_resnames.items():
-            pair_coeffs, atom_name, is_term, _, _ = key
+            pair_coeffs, atom_name, is_term = key
             new_key = (tuple(sorted(resnames)), atom_name, is_term)
             assert new_key not in atom_type_to_coeffs
             atom_type_to_coeffs[new_key] = pair_coeffs
@@ -334,10 +352,9 @@ class CharmmDataBuilder(BaseDataBuilder):
             assert new_key not in atom_type_to_ids
             atom_type_to_ids[new_key] = atom_type_to_ids.pop(key)
 
-        for atom in other_atoms:
+        for atom in cb_atoms:
             assert atom.name == "CB"
-
-            key = ((atom.resname,), atom.name, False)
+            key = ((atom.resname,), "CB", False)
             atom_type_to_ids.setdefault(key, []).append(get_atom_id(atom))
 
             if key in atom_type_to_coeffs:
@@ -358,7 +375,7 @@ class CharmmDataBuilder(BaseDataBuilder):
             atom_type: i for i, atom_type in enumerate(atom_type_to_coeffs)
         }
 
-        return atom_to_type, atom_type_to_index, atom_type_to_coeffs
+        return atom_to_type, atom_type_to_index, atom_type_to_coeffs, atom_charges_dict
 
     def build_atom_type_masses(self):
         atom_type_masses = []
@@ -369,16 +386,14 @@ class CharmmDataBuilder(BaseDataBuilder):
             match atom_type:
                 case _, "C", is_term:
                     mass = amd["C"] + (2 * amd["O"] if is_term else 0)
-                case _, "O", False:
-                    mass = amd["O"]
-                case ["PRO"], "N", False:
-                    mass = amd["N"]
                 case _, "N", is_term:
                     mass = amd["N"] + (3 * amd["H"] if is_term else amd["H"])
-                case ["GLY"], "CA", False:
-                    mass = amd["C"] + 2 * amd["H"]
+                case _, "O", False:
+                    mass = amd["O"]
                 case _, "CA", False:
-                    mass = amd["C"] + amd["H"]
+                    mass = amd["C"]
+                case _, ("HA" | "HN" | "HA1" | "HA2"), False:
+                    mass = amd["H"]
                 case [resname], "CB", False:
                     mass = rmd[convert_aa_code(resname)]
                 case _:
@@ -405,21 +420,9 @@ class CharmmDataBuilder(BaseDataBuilder):
         cg_ag.translate(-com)
 
         for atom in cg_ag:
-            atom_type = self._atom_to_type[get_atom_id(atom)]
-
-            match atom_type:
-                case (_, "N", is_term):
-                    charge = 1 if is_term else 0
-                case (_, "C", is_term):
-                    charge = -1 if is_term else 0
-                case (_, "O", False):
-                    charge = 0
-                case (_, "CA", False):
-                    charge = 0
-                case ([resname], "CB", False):
-                    charge = charges_dict[convert_aa_code(resname)]
-                case _:
-                    raise Exception
+            atom_id = get_atom_id(atom)
+            atom_type = self._atom_to_type[atom_id]
+            charge = self._atom_charges_dict[atom_id]
 
             type_index = self._atom_type_to_index[atom_type]
             index = self._cg_atom_to_ind[get_atom_id(atom)] + 1

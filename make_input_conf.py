@@ -59,7 +59,7 @@ def write_input_config(
         f"improper_style harmonic\n"
         f"special_bonds charmm\n"
         f"\n"
-        f"pair_style hybrid/overlay mie/cut 8.0 coul/debye {inv_kappa} 10.0\n"
+        f"pair_style hybrid/overlay mie/cut 8.0 coul/debye {inv_kappa} 8.0\n"
         # f"pair_style lj/charmm/coul/long 8.0 10.0\n"
         # f"pair_modify mix arithmetic\n"
         # f"suffix off\n"
@@ -162,8 +162,7 @@ def write_configs(
 
 def build_cmaps(ens_ref_traj, data_builder: BaseDataBuilder, args: argparse.Namespace):
     def make_grid(cmap_points):
-        eps = 180 * np.finfo(float).eps
-        angles = np.linspace(-180 - eps, 180 + eps, cmap_points + 1, endpoint=True)
+        angles = np.linspace(-np.pi, np.pi, cmap_points + 1, endpoint=True)
         return np.stack(np.meshgrid(angles, angles, indexing="ij"), axis=-1), angles
 
     def check_inds(topo, phi_inds, psi_inds):
@@ -366,17 +365,24 @@ def write_ens_xtc(path, cg_atom_ids, ens_pdb_files):
 
         topo = pdb_traj.topology
         cg_atoms_set = {(resid, name) for resid, name in cg_atom_ids}
+        assert len(cg_atoms_set) == len(cg_atom_ids)
+
+        mdtraj_rename = {"H": "HN", "HA3": "HA1"}
 
         inds = [
             atom.index
             for atom in topo.atoms
-            if (atom.residue.index + 1, atom.name) in cg_atoms_set
+            if (
+                atom.residue.index + 1,
+                mdtraj_rename[atom.name] if atom.name in mdtraj_rename else atom.name,
+            )
+            in cg_atoms_set
         ]
+        assert len(inds) == len(cg_atoms_set)
 
         xyz_list.append(pdb_traj.positions[0, inds])
 
     xyz = np.stack(xyz_list, axis=0)
-    # xyz = np.asarray(np.around(xyz, 3), dtype=np.float32)
     xyz = np.asarray(xyz, dtype=np.float32)
 
     xtc_traj = XTCTrajectoryFile(str(path), "w")
@@ -407,8 +413,7 @@ def run_cmap_sim(init_ag_map, data_builder, args, ens_traj_file, cg_pdb_file):
         cmap_subdir = conform_subdir / "cmap"
         cmap_subdir.mkdir(exist_ok=True)
 
-        # ref_traj_file = ref_subdir / "traj.xtc"
-        ref_traj_file = ref_subdir / "traj.dcd"
+        ref_traj_file = ref_subdir / "traj.xtc"
         assert ref_traj_file.exists()
         ref_traj = mdt.load(ref_traj_file, top=cg_pdb_file)
         ens_traj = mdt.load(ens_traj_file, top=cg_pdb_file)
