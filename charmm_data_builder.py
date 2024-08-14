@@ -10,7 +10,6 @@ from data_utils import (
     r0_dict,
     epsilon_dict,
     residue_masses_dict,
-    charges_dict,
     build_cmap_atoms,
 )
 from base_data_builder import BaseDataBuilder
@@ -259,6 +258,8 @@ class CharmmDataBuilder(BaseDataBuilder):
             _, atom_name_i, _ = key_i
             _, atom_name_j, _ = key_j
 
+            # see https://www.desmos.com/calculator/rtdnjrfqse
+
             if atom_name_i == "CB" and atom_name_j == "CB":
                 # sidechain-sidechain interaction
                 sigma_i /= 2 / sqrt(3)
@@ -309,9 +310,9 @@ class CharmmDataBuilder(BaseDataBuilder):
             atom_to_coeffs[get_atom_id(atom)] = tuple(pair_coeffs)
 
         eps = np.finfo(float).eps
-        for key, charge in charges_dict.items():
+        for key, charge in atom_charges_dict.items():
             if np.abs(charge) < eps:
-                charges_dict[key] = 0.0
+                atom_charges_dict[key] = 0.0
 
         for atom in self._cg_ag:
             if atom.name == "CB":

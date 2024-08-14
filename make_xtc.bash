@@ -5,8 +5,9 @@ cd ensemble || exit
 for i in *a_132.pdb
 do
 	stem=$(basename "${i}" .pdb)
-	grep ' CA \| C \| N \| CB \| 2HA' "${stem}.pdb" > "${stem}_CG.pdb"
-	gmx trjconv -f "${stem}_CG.pdb" -o "${stem}.xtc" &> /dev/null
+	# grep ' CA \| C \| N \| CB \| 2HA' "${stem}.pdb" > "${stem}_CG.pdb"
+	# gmx trjconv -f "${stem}_CG.pdb" -o "${stem}.xtc" &> /dev/null
+	gmx trjconv -f "${stem}.pdb" -o "${stem}.xtc" &> /dev/null
 done
 
 
