@@ -10,6 +10,11 @@ from scipy import constants
 import matplotlib.pyplot as plt
 import matplotlib.colors as colors
 
+from rpy2.robjects.packages import importr
+import rpy2.robjects as robjects
+from rpy2.robjects import numpy2ri
+from rpy2.robjects import default_converter
+
 
 def old_make_grid(resolution):
     step = 2 * np.pi / resolution
@@ -71,11 +76,11 @@ def build_phipsi(traj):
 
     check_inds(traj.topology, phi_inds, psi_inds)
 
-    zero_pad = np.zeros([phi.shape[0], 1])
-    phi = np.concatenate([zero_pad, phi], axis=1)
+    pad = np.full([phi.shape[0], 1], np.nan)
+    phi = np.concatenate([pad, phi], axis=1)
     phi = np.mod(phi + np.pi, 2 * np.pi) - np.pi
 
-    psi = np.concatenate([psi, zero_pad], axis=1)
+    psi = np.concatenate([psi, pad], axis=1)
     psi = np.mod(psi + np.pi, 2 * np.pi) - np.pi
 
     phipsi = np.stack([phi, psi], axis=-1).transpose([1, 0, 2])
@@ -106,11 +111,12 @@ def extend_phipsi(phipsi, frac):
 
     return phipsi
 
-def find_bw(phipsi, id):
-    fft_kde = FFTKDE(bw="silverman")
-    n_vecs = 32
 
-    angs = np.linspace(0, np.pi, n_vecs, endpoint=False)
+def find_bw(phipsi):
+    fft_kde = FFTKDE(bw="silverman")
+    n_vecs = 64
+
+    angs = np.linspace(-np.pi, np.pi, n_vecs, endpoint=False)
     vecs = np.stack([np.cos(angs), np.sin(angs)], axis=0)
     proj = phipsi.dot(vecs)
 
@@ -123,15 +129,16 @@ def find_bw(phipsi, id):
     cr_pts = f.derivative().roots()
     cr_vals = f(cr_pts)
 
-    i_max = cr_vals.argmax()
+    # i_max = cr_vals.argmax()
 
-    plt.plot(angs, bws, "bo")
-    plt.plot(cr_pts[i_max], cr_vals[i_max], "ro")
+    # plt.plot(angs, bws, "bo")
+    # plt.plot(cr_pts[i_max], cr_vals[i_max], "ro")
 
-    plt.savefig(f"plots/{id}_bw_curve.png")
-    plt.clf()
+    # plt.savefig(f"plots/{id}_bw_curve.png")
+    # plt.clf()
 
     return cr_vals.max()
+    # return cr_vals.min()
 
 
 def compute_pdf(phipsi, grid, angles, slc, bw):
@@ -141,114 +148,107 @@ def compute_pdf(phipsi, grid, angles, slc, bw):
     # pdf = fft_kde.evaluate(grid.reshape(-1, 2)).reshape(grid.shape[:2]).T
     pdf = fft_kde.evaluate(grid.reshape(-1, 2)).reshape(grid.shape[:2])
 
-    pdf = pdf[slc.start:slc.stop, slc.start:slc.stop]
+    pdf = pdf[slc.start : slc.stop, slc.start : slc.stop]
 
-    angles = angles[slc.start:slc.stop]
+    angles = angles[slc.start : slc.stop]
 
     vol = simpson(simpson(pdf, x=angles), x=angles)
-    print(vol)
+    # print(vol)
     pdf /= vol
 
-    pdf = pdf[:-1:slc.step, :-1:slc.step]
-    print(pdf.shape)
+    pdf = pdf[: -1 : slc.step, : -1 : slc.step]
 
     return pdf
 
-# ref_bws = {}
-# ens_bws = {}
 
-# for ind, resids in ind_to_resids:
-#     sel_ref_phipsi = ref_phipsi[np.asarray(resids) - 1].reshape(-1, 2)
-#     ref_bw = find_bw(sel_ref_phipsi, "_".join(map(str, resids)) + "_ref")
-#     ref_bws[ind] = ref_bw
+def compute_pdf_r(phipsi, resolution, factor=10):
+    ks = importr("ks")
 
-#     sel_ens_phipsi = ens_phipsi[np.asarray(resids) - 1].reshape(-1, 2)
-#     ens_bw = find_bw(sel_ens_phipsi, "_".join(map(str, resids)) + "_ens")
-#     ens_bws[ind] = ens_bw
+    phipsi_r = robjects.r.array(
+        robjects.FloatVector(phipsi.flatten("F").tolist()),
+        dim=robjects.IntVector(phipsi.shape),
+    )
 
-# ref_bws_list = list(ref_bws.values())
-# plt.hist(ref_bws_list, density=True, label="ref")
-# plt.vlines(np.mean(ref_bws_list), 0, 10, colors="r")
-# plt.savefig("plots/bw/bw_ref.png")
-# plt.clf()
+    Hpi = ks.Hpi(x=phipsi_r)
 
-# ens_bws_list = list(ens_bws.values())
-# plt.hist(ens_bws_list, density=True, label="ens")
-# plt.vlines(np.mean(ens_bws_list), 0, 10, colors="r")
-# plt.savefig("plots/bw/bw_ens.png")
-# plt.clf()
-# print("fatto!")
+    pi = robjects.r.pi[0]
+    xmin = robjects.FloatVector([-pi, -pi])
+    xmax = robjects.FloatVector([pi, pi])
+
+    # stride = ceil(151 / resolution)
+
+    gridsize = robjects.IntVector([resolution * factor + 1, resolution * factor + 1])
+
+    k = ks.kde(x=phipsi_r, H=Hpi, gridsize=gridsize, xmin=xmin, xmax=xmax, density=True)
+
+    pdf = np.array(k.rx2("estimate"))
+    xangles = np.array(k.rx2("eval.points").rx2(1))
+    yangles = np.array(k.rx2("eval.points").rx2(2))
+
+    assert np.all(xangles == yangles)
+
+    # vol = simpson(simpson(pdf, x=xangles), x=xangles)
+    # print("vol:", vol)
+    # pdf /= vol
+
+    return pdf[:-1:factor, :-1:factor], xangles[:-1:factor]
+
 
 def build_cmap(
     ens_phipsi,
     ref_phipsi,
-    ens_bw,
-    ref_bw,
+    basepath,
+    ens_bw=None,
+    ref_bw=None,
     resolution: int = 24,
-    eps: float = 1.1615857613434818e-09,
+    # eps: float = 1.1615857613434818e-09,
+    Emin = -7.0,
     temp: float = 300.0,
 ):
     R = constants.R / (constants.calorie * 1e3)
 
-    factor = 100
-    frac = 0.2
+    # factor = 100
+    # frac = 0.2
 
-    ens_phipsi = extend_phipsi(ens_phipsi, frac)
-    ref_phipsi = extend_phipsi(ref_phipsi, frac)
+    # ens_phipsi = extend_phipsi(ens_phipsi, frac)
+    # ref_phipsi = extend_phipsi(ref_phipsi, frac)
 
-    # grid, angles, inds = make_grid(resolution, factor, frac)
-    # ixgrid = np.ix_(inds, inds)
-    grid, angles, slc = make_grid(resolution, factor, frac)
+    # grid, angles, slc = make_grid(resolution, factor, frac)
 
-    # bw = find_bw(sel_ref_phipsi, "_".join(map(str, resids)) + "_ref")
-    # print(bw)
-    ref_pdf = compute_pdf(ref_phipsi, grid, angles, slc, ref_bw)
-    # ref_pdf = ref_pdf[:-1:factor, :-1:factor]
-    # ref_pdf = ref_pdf[ixgrid]
-    # print(ref_pdf.shape)
+    # if ref_bw is None:
+    #     ref_bw = find_bw(ref_phipsi)
 
-    # plt.imshow(
-    #     ref_dens.T, origin="lower", cmap="seismic", norm=colors.CenteredNorm()
-    # )
-    # plt.colorbar()
-    # plt.savefig(f"plots/" + "_".join(map(str, resids)) + "_dens_ref.png")
-    # plt.clf()
+    # ref_pdf = compute_pdf(ref_phipsi, grid, angles, slc, ref_bw)
+    ref_pdf, _ = compute_pdf_r(ref_phipsi, resolution)
 
-    # sel_ens_phipsi = ens_phipsi[np.asarray(resids) - 1].reshape(-1, 2)
+    plt.imshow(ref_pdf.T, origin="lower", cmap="seismic", norm=colors.CenteredNorm())
+    plt.colorbar()
+    plt.savefig(basepath + "_dens_ref.png")
+    plt.clf()
 
-    # plt.plot(sel_ens_phipsi[:, 0], sel_ens_phipsi[:, 1], ",")
-    # plt.savefig(f"plots/" + "_".join(map(str, resids)) + "_scatter.png")
-    # plt.clf()
+    plt.plot(ens_phipsi[:, 0], ens_phipsi[:, 1], ".")
+    plt.savefig(basepath + "_scatter.png")
+    plt.clf()
 
-    # bw = find_bw(sel_ens_phipsi, "_".join(map(str, resids)) + "_ens")
-    # print(bw)
-    ens_pdf = compute_pdf(ens_phipsi, grid, angles, slc, ens_bw)
-    # ens_pdf = ens_pdf[:-1:factor, :-1:factor]
-    # ens_pdf = ens_pdf[ixgrid]
+    # if ens_bw is None:
+    #     ens_bw = find_bw(ens_phipsi)
 
-    # plt.imshow(
-    #     ens_dens.T, origin="lower", cmap="seismic", norm=colors.CenteredNorm()
-    # )
-    # plt.colorbar()
-    # plt.savefig(f"plots/" + "_".join(map(str, resids)) + "_dens_ens.png")
-    # plt.clf()
+    ens_pdf, angles = compute_pdf_r(ens_phipsi, resolution)
 
-    print(np.log(eps + ens_pdf).min())
-    print(np.log(eps + ref_pdf).min())
-    # print(np.log(eps + ref_pdf).max())
+    plt.imshow(ens_pdf.T, origin="lower", cmap="seismic", norm=colors.CenteredNorm())
+    plt.colorbar()
+    plt.savefig(basepath + "_dens_ens.png")
+    plt.clf()
 
     RT = R * temp
+    eps = np.exp(Emin / RT)
     cmap = -RT * (np.log(eps + ens_pdf) - np.log(eps + ref_pdf))
 
-    print(cmap.min())
+    plt.imshow(cmap.T, origin="lower", cmap="seismic", norm=colors.CenteredNorm())
+    plt.colorbar()
+    plt.savefig(basepath + "_cmap.png")
+    plt.clf()
 
-    # plt.imshow(cmap.T, origin="lower", cmap="seismic", norm=colors.CenteredNorm())
-    # plt.colorbar()
-    # plt.savefig(f"plots/" + "_".join(map(str, resids)) + "_cmap.png")
-    # plt.clf()
-
-    # cmaps_dict[ind] = cmap
-
-    # plt.close()
+    plt.close()
     # return cmaps_dict, np.rint(angles[:-1:factor] * 180 / np.pi)
-    return cmap, ref_pdf, ens_pdf, angles
+    return cmap, ens_pdf, ref_pdf, angles

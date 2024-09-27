@@ -1,6 +1,4 @@
-# use gromacs "gmx gyrate" or mdtraj.compute_rg? well, the faster one..
 from pathlib import Path
-import shutil
 import os
 import shlex
 import subprocess
@@ -21,7 +19,7 @@ def xvg_find_first_line(f):
     raise Exception
 
 
-def gmx_gyrate(xtc, pdb_or_gro):
+def gmx_gyrate(xtc, top):
     gmxrc = "/usr/local/gromacs/bin/GMXRC"
 
     command = shlex.split(f"bash -c 'source {gmxrc} && env'")
@@ -36,9 +34,10 @@ def gmx_gyrate(xtc, pdb_or_gro):
     output = Path("/tmp/output.xvg")
 
     proc = subprocess.Popen(
-        ["gmx", "gyrate", "-f", xtc, "-s", pdb_or_gro, "-o", str(output)],
+        ["gmx", "gyrate", "-f", xtc, "-s", top, "-o", str(output)],
         stdin=subprocess.PIPE,
         stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
         text=True,
         env=gmx_env,
     )
@@ -57,5 +56,11 @@ def gmx_gyrate(xtc, pdb_or_gro):
         index_col=0,
     )
     output.unlink()
+    assert not output.exists()
 
     return df
+
+
+def mdtraj_rg(xtc, top):
+    traj = mdt.load(xtc, top=top)
+    return mdt.compute_rg(traj)
