@@ -1,35 +1,16 @@
 from pathlib import Path
-import os
-import shlex
 import subprocess
 
 import mdtraj as mdt
 import pandas as pd
-from parse import compile
+from gmx_utils import build_gmx_env, xvg_find_first_line
 
 
-def xvg_find_first_line(f):
-    fmt = " {:10.3f} {:8.6f} {:8.6f} {:8.6f} {:8.6f}\n"
-    pattern = compile(fmt)
+def gmx_gyrate(xtc, top, gmxrc=None):
+    env = None
 
-    for i, line in enumerate(f):
-        if pattern.parse(line) is not None:
-            return i
-
-    raise Exception
-
-
-def gmx_gyrate(xtc, top):
-    gmxrc = "/usr/local/gromacs/bin/GMXRC"
-
-    command = shlex.split(f"bash -c 'source {gmxrc} && env'")
-    p = subprocess.run(command, text=True, capture_output=True)
-
-    gmx_env = os.environ.copy()
-
-    for line in p.stdout.splitlines():
-        (key, _, value) = line.partition("=")
-        gmx_env[key] = value
+    if gmxrc is not None:
+        env = build_gmx_env(gmxrc)
 
     output = Path("/tmp/output.xvg")
 
@@ -39,14 +20,15 @@ def gmx_gyrate(xtc, top):
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
         text=True,
-        env=gmx_env,
+        env=env,
     )
     proc.communicate("Protein\n")
 
     with output.open() as f:
         lines_to_skip = xvg_find_first_line(f)
 
-    print(lines_to_skip)
+    # print(lines_to_skip)
+
     df = pd.read_csv(
         output,
         sep=" ",

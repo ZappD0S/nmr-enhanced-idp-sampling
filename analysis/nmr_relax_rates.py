@@ -1,23 +1,25 @@
 import numpy as np
-from scipy.constants import mu_0, value, pi, h, hbar
+from scipy.constants import mu_0, value, h, hbar
 
 
 class NMR_relaxation_rates:
     def __init__(self, amps, taus, B0_MHz, theta_deg=22):
-        g15N = -2.7126 * 1e7 # rad * s^−1 * T^−1
-        g1H = value("proton gyromag. ratio") # rad * s^−1 * T^−1
+        g15N = -2.7126 * 1e7  # rad * s^−1 * T^−1
+        g1H = value("proton gyromag. ratio")  # rad * s^−1 * T^−1
         rNH = 1.02 * 1e-10
-        dCSA = -170.0 * 1e-6
+        dCSA = -170.0 * 1e-6  # the 1e-6 is for ppm
 
-        # g15N /= 2 * np.pi
-        # g1H /= 2 * np.pi
+        g15N /= 2 * np.pi
+        g1H /= 2 * np.pi
 
         B0 = B0_MHz / value("proton gyromag. ratio in MHz/T")
 
         # omegaN = g15N / (2 * np.pi) * B0
         # omegaH = g1H / (2 * np.pi) * B0
-        omegaN = g15N / (2 * np.pi) * B0
-        omegaH = g1H / (2 * np.pi) * B0
+
+        omegaN = g15N * B0
+        omegaH = g1H * B0
+
         omega_diff = omegaH - omegaN
         omega_sum = omegaH + omegaN
 
@@ -33,24 +35,32 @@ class NMR_relaxation_rates:
 
         J = self.define_J(amps, taus)
         c = dCSA * omegaN / np.sqrt(3.0)
-        # d = mu_0 * h * g1H * g15N / (8 * pi**2 * rNH**3)
-        d = mu_0 * hbar * g1H * g15N / (4 * pi * rNH**3)
+        # d = mu_0 * h * g1H * g15N / (8 * pi**2) * rNH**-3
+        # d = mu_0 * hbar * g1H * g15N / (4 * pi * rNH**3)
+        d = mu_0 * hbar * g1H * g15N * rNH**-3
 
         # see https://doi.org/10.1021/jacs.6b02424
         theta = np.deg2rad(theta_deg)
 
-        self.R1 = (
-            d**2 / 4.0 * (6.0 * J(omega_sum) + J(omega_diff) + 3.0 * J(omegaN))
-            + J(omegaN) * c**2
-        )
+        # self.R1 = (
+        #     d**2 / 4.0 * (6.0 * J(omega_sum) + J(omega_diff) + 3.0 * J(omegaN))
+        #     + J(omegaN) * c**2
+        # )
+        self.R1 = (d**2) / 10 * (
+            J(omega_diff) + 3 * J(omegaN) + 6 * J(omega_sum)
+        ) + 2 / 15 * (omegaN * dCSA) ** 2 * J(omegaN)
 
-        self.R2 = d**2 / 8.0 * (
-            6.0 * J(omega_sum)
-            + 6.0 * J(omegaH)
-            + J(omega_diff)
-            + 3.0 * J(omegaN)
-            + 4.0 * J(0)
-        ) + c**2 / 6 * (3.0 * J(omegaN) + 4.0 * J(0))
+        # self.R2 = d**2 / 8.0 * (
+        #     4.0 * J(0)
+        #     + J(omega_diff)
+        #     + 3.0 * J(omegaN)
+        #     + 6.0 * J(omegaH)
+        #     + 6.0 * J(omega_sum)
+        # ) + c**2 / 6.0 * (4.0 * J(0) + 3.0 * J(omegaN))
+
+        self.R2 = (d**2) / 20 * (
+            4 * J(0) + J(omega_diff) + 3 * J(omegaN) + 6 * J(omegaH) + 6 * J(omega_sum)
+        ) + ((omegaN * dCSA) ** 2) / 45 * (4 * J(0) + 3 * J(omegaN))
 
         self.NOE = 1.0 + d**2 / (4.0 * self.R1) * g1H / g15N * (
             6.0 * J(omega_sum) - J(omega_diff)
@@ -87,14 +97,16 @@ class NMR_relaxation_rates:
     #     return J
 
     def define_J(self, amps, taus):
-        amps = amps[..., None, :]
-        taus = taus[..., None, :]
+        # amps = amps[..., None, :]
+        # taus = taus[..., None, :]
 
         def J(omega):
-            omega = np.asarray(omega)[..., None]
-            all_terms = 2 / 5 * amps * taus / (1.0 + (omega * taus) ** 2)
+            # omega = np.asarray(omega)[..., None]
+            # all_terms = 2 * np.pi * amps * taus / (1.0 + (omega * taus) ** 2)
             # all_terms = amps * taus / (1.0 + (omega * taus) ** 2)
-            return np.squeeze(np.sum(all_terms, axis=-1))
+            # all_terms = 2 * amps * taus / (1.0 + (2 * np.pi * omega * taus) ** 2)
+            all_terms = amps * taus / (1.0 + (omega * taus) ** 2)
+            return np.sum(all_terms, axis=1)
 
         return J
 

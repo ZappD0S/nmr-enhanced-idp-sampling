@@ -100,26 +100,11 @@ names = [
 ]
 
 # TODO: make configurable
-faspr_bin = "/home/gzappavigna/FASPR/FASPR"
-spartaplus_bin = Path("/home/gzappavigna/SPARTA+/bin/SPARTA+.static.linux9")
+spartaplus_bin = Path("/home/gzappavigna/software/SPARTA+/bin/SPARTA+.static.linux9")
 # sparta_bin = Path("/home/gzappavigna/SPARTA/src/SPARTA")
 
 
-def run_faspr(tempdir, pdbs):
-    pdbs = []
-
-    for pdb_cg in enumerate(pdbs):
-        pdb_all = pdb_cg.parent / (pdb_cg.stem + "_all.pdb")
-
-        subprocess.run([faspr_bin, "-i", str(pdb_cg), "-o", str(pdb_all)], check=True)
-        assert pdb_all.exists()
-
-        pdbs.append(pdb_all)
-
-    return pdbs
-
-
-def call_sparta(tempdir, idx, frame):
+def call_sparta(tempdir, idx, frame, atoms):
     stem = f"trj{idx}"
     pdb = tempdir / (stem + ".pdb")
     frame.save(pdb)
@@ -128,9 +113,9 @@ def call_sparta(tempdir, idx, frame):
     pred_tab = tempdir / (stem + "_pred.tab")
 
     subprocess.run(
-        [spartaplus_bin]
-        + ["-in", str(pdb)]
+        [spartaplus_bin] + ["-in", str(pdb)]
         # + ["-sum", str(pred_tab)]
+        + ["-atom", *atoms]
         + ["-out", str(pred_tab)]
         + ["-spartaDir", str(spartaplus_bin.parents[1])],
         cwd=tempdir,
@@ -148,21 +133,18 @@ def call_sparta(tempdir, idx, frame):
     return pred_tab
 
 
-def run_sparta(tempdir, traj):
+def run_sparta(tempdir, traj, atoms):
     with concurrent.futures.ProcessPoolExecutor() as executor:
         futures = []
 
         for i, frame in enumerate(traj):
-            future = executor.submit(call_sparta, tempdir, i, frame)
+            future = executor.submit(call_sparta, tempdir, i, frame, atoms)
             futures.append(future)
 
         dones, not_dones = concurrent.futures.wait(futures)
 
     assert len(not_dones) == 0
-    preds = []
-
-    for future in dones:
-        preds.append(future.result())
+    preds = [future.result() for future in dones]
 
     # for pdb in pdbs:
     #     pred_tab = pdb.parent / (pdb.stem + "_pred.tab")
@@ -208,32 +190,18 @@ def build_df(preds):
     #     df.name[df.name == "HN"] = "H"
 
     df = df.pivot_table(
-        index=["resSeq", "name"],
-        columns="frame",
-        values="SHIFT",
+        index=["frame", "resSeq", "name"],
+        values=["SHIFT", "SS_SHIFT", "RC_SHIFT", "SIGMA"],
     )
 
     return df
 
 
-def compute_chem_shift(
-    traj,
-    period: float,  # in ps
-    cg=False,
-):
-
-    one_every = round(period / traj.timestep)
-    inds = np.arange(0, traj.time.size, one_every)
-
-    subtraj = traj[inds]
-
+def compute_chem_shift(traj, atoms=["CA"]):
     with tempfile.TemporaryDirectory() as tempdir_:
         tempdir = Path(tempdir_)
 
-        # if cg:
-        #     pdbs = run_faspr(tempdir, pdbs)
-
-        preds = run_sparta(tempdir, subtraj)
+        preds = run_sparta(tempdir, traj, atoms)
         df = build_df(preds)
 
     return df

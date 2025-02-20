@@ -1,5 +1,4 @@
 from itertools import pairwise
-from MDAnalysis.core.groups import Atom
 
 charges_dict = {
     "A": 0,
@@ -98,7 +97,7 @@ epsilon_dict = {
 }
 
 
-def get_atom_id(atom: Atom):
+def get_atom_id(atom):
     return (int(atom.resid), atom.name)
 
 
@@ -111,15 +110,15 @@ def filter_atoms(ag, atom_ids):
     )
 
 
-def is_terminus(atom: Atom):
+def is_terminus(atom):
     # TODO: do we need the int() ?
-    def is_c_terminus(atom: Atom):
+    def is_c_terminus(atom):
         u = atom.universe
         return (
             atom.type == "C" and atom.name == "C" and int(atom.resid) == len(u.residues)
         )
 
-    def is_n_terminus(atom: Atom):
+    def is_n_terminus(atom):
         return atom.type == "N" and atom.name == "N" and int(atom.resid) == 1
 
     return is_c_terminus(atom) or is_n_terminus(atom)
